@@ -17,8 +17,8 @@ class EncoderLayer(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor, mask: torch.Tensor | None = None) -> torch.Tensor:
-        x = self.norm1(x + self.dropout(self.self_attn(x, x, x, mask)))
-        x = self.norm2(x + self.dropout(self.ff(x)))
+        x = x + self.dropout(self.self_attn(self.norm1(x), self.norm1(x), self.norm1(x), mask))
+        x = x + self.dropout(self.ff(self.norm2(x)))
         return x
 
 
