@@ -1,0 +1,83 @@
+import torch
+import torch.nn as nn
+from .encoder import Encoder
+from .decoder import Decoder
+
+
+def make_src_mask(src: torch.Tensor, pad_idx: int = 0) -> torch.Tensor:
+    return (src != pad_idx).unsqueeze(1).unsqueeze(2)
+
+
+def make_tgt_mask(tgt: torch.Tensor, pad_idx: int = 0) -> torch.Tensor:
+    tgt_len = tgt.size(1)
+    causal = torch.tril(torch.ones(tgt_len, tgt_len, device=tgt.device)).bool()
+    padding = (tgt != pad_idx).unsqueeze(1).unsqueeze(2)
+    return causal & padding
+
+
+class Transformer(nn.Module):
+    def __init__(
+        self,
+        src_vocab_size: int,
+        tgt_vocab_size: int,
+        d_model: int = 512,
+        nhead: int = 8,
+        num_layers: int = 6,
+        d_ff: int = 2048,
+        dropout: float = 0.1,
+        max_len: int = 5000,
+        pad_idx: int = 0,
+    ) -> None:
+        super().__init__()
+        self.pad_idx = pad_idx
+        self.encoder = Encoder(src_vocab_size, d_model, nhead, num_layers, d_ff, dropout, max_len)
+        self.decoder = Decoder(tgt_vocab_size, d_model, nhead, num_layers, d_ff, dropout, max_len)
+        self.projection = nn.Linear(d_model, tgt_vocab_size)
+        self._init_weights()
+
+    def _init_weights(self) -> None:
+        for p in self.parameters():
+            if p.dim() > 1:
+                nn.init.xavier_uniform_(p)
+
+    def encode(self, src: torch.Tensor, src_mask: torch.Tensor) -> torch.Tensor:
+        return self.encoder(src, src_mask)
+
+    def decode(
+        self,
+        tgt: torch.Tensor,
+        enc_output: torch.Tensor,
+        src_mask: torch.Tensor,
+        tgt_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        return self.decoder(tgt, enc_output, src_mask, tgt_mask)
+
+    def forward(self, src: torch.Tensor, tgt: torch.Tensor) -> torch.Tensor:
+        src_mask = make_src_mask(src, self.pad_idx)
+        tgt_mask = make_tgt_mask(tgt, self.pad_idx)
+        enc_output = self.encode(src, src_mask)
+        dec_output = self.decode(tgt, enc_output, src_mask, tgt_mask)
+        return self.projection(dec_output)
+
+    @torch.no_grad()
+    def generate(
+        self,
+        src: torch.Tensor,
+        sos_idx: int,
+        eos_idx: int,
+        max_len: int = 50,
+    ) -> list[int]:
+        self.eval()
+        src_mask = make_src_mask(src, self.pad_idx)
+        enc_output = self.encode(src, src_mask)
+        tgt = torch.tensor([[sos_idx]], device=src.device)
+        result = []
+        for _ in range(max_len):
+            tgt_mask = make_tgt_mask(tgt, self.pad_idx)
+            dec_output = self.decode(tgt, enc_output, src_mask, tgt_mask)
+            next_token = self.projection(dec_output[:, -1, :]).argmax(dim=-1).item()
+            if next_token == eos_idx:
+                break
+            result.append(next_token)
+            tgt = torch.cat([tgt, torch.tensor([[next_token]], device=src.device)], dim=1)
+        return result
