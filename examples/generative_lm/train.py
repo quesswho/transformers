@@ -27,7 +27,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 
-from transformer import Encoder
+from transformer import DecoderOnlyTransformer
 from tokenizer import SentencePieceBPE
 
 DATA_URL = "https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt"
@@ -71,43 +71,6 @@ class CharDataset(Dataset):
         y = torch.tensor(chunk[1:], dtype=torch.long)
         return x, y
 
-
-class LanguageModel(nn.Module):
-    def __init__(
-        self,
-        vocab_size: int,
-        d_model: int,
-        nhead: int,
-        num_layers: int,
-        d_ff: int,
-        dropout: float,
-        block_size: int,
-    ) -> None:
-        super().__init__()
-        self.encoder = Encoder(vocab_size, d_model, nhead, num_layers, d_ff, dropout, block_size)
-        self.head = nn.Linear(d_model, vocab_size)
-        causal = torch.tril(torch.ones(block_size, block_size)).bool()
-        self.register_buffer("causal_mask", causal.unsqueeze(0).unsqueeze(0))
-        for p in self.parameters():
-            if p.dim() > 1:
-                nn.init.xavier_uniform_(p)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        T = x.size(1)
-        mask = self.causal_mask[:, :, :T, :T]
-        return self.head(self.encoder(x, mask))
-
-    @torch.no_grad()
-    def generate(self, idx: torch.Tensor, steps: int, temperature: float = 1.0) -> torch.Tensor:
-        self.eval()
-        block_size = self.causal_mask.size(-1)
-        for _ in range(steps):
-            ctx = idx[:, -block_size:]
-            logits = self(ctx)[:, -1, :]
-            probs = torch.softmax(logits / temperature, dim=-1)
-            next_tok = torch.multinomial(probs, num_samples=1)
-            idx = torch.cat([idx, next_tok], dim=1)
-        return idx
 
 
 def main() -> None:
@@ -170,18 +133,17 @@ def main() -> None:
 
     print(f"Vocab size: {vocab_size}  |  Train tokens: {len(data[:split]):,}  |  Val tokens: {len(data[split:]):,}\n")
 
-    model = LanguageModel(
+    model = DecoderOnlyTransformer(
         vocab_size=vocab_size,
         d_model=args.d_model,
         nhead=args.nhead,
         num_layers=args.num_layers,
         d_ff=args.d_ff,
         dropout=args.dropout,
-        block_size=args.block_size,
+        max_len=args.block_size,
     ).to(device)
 
-    enc_counts = model.encoder.count_parameters()
-    counts = {**enc_counts, "head": sum(p.numel() for p in model.head.parameters())}
+    counts = model.count_parameters()
     total = sum(counts.values())
     print(f"{'Component':<25} {'Params':>12}  {'%':>6}")
     for name, val in counts.items():
@@ -256,7 +218,7 @@ def main() -> None:
     if args.prompt is not None:
         print(f"\n--- Generated text (temperature={args.temperature}) ---\n")
         ctx = torch.tensor([tokenizer.encode(args.prompt)], dtype=torch.long, device=device)
-        out = model.generate(ctx, steps=args.generate_steps, temperature=args.temperature)
+        out = model.generate(ctx, max_new_tokens=args.generate_steps, temperature=args.temperature)
         print(tokenizer.decode(out[0].tolist()))
 
 

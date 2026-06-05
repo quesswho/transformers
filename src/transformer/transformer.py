@@ -15,7 +15,7 @@ def make_tgt_mask(tgt: torch.Tensor, pad_idx: int = 0) -> torch.Tensor:
     return causal & padding
 
 
-class Transformer(nn.Module):
+class EncoderDecoderTransformer(nn.Module):
     def __init__(
         self,
         src_vocab_size: int,
@@ -101,3 +101,73 @@ class Transformer(nn.Module):
             result.append(next_token)
             tgt = torch.cat([tgt, torch.tensor([[next_token]], device=src.device)], dim=1)
         return result
+
+
+class DecoderOnlyTransformer(nn.Module):
+    def __init__(
+        self,
+        vocab_size: int,
+        d_model: int = 512,
+        nhead: int = 8,
+        num_layers: int = 6,
+        d_ff: int = 2048,
+        dropout: float = 0.1,
+        max_len: int = 5000,
+        pad_idx: int = 0,
+    ) -> None:
+        super().__init__()
+        self.pad_idx = pad_idx
+        self.encoder = Encoder(vocab_size, d_model, nhead, num_layers, d_ff, dropout, max_len)
+        self.projection = nn.Linear(d_model, vocab_size)
+        causal = torch.tril(torch.ones(max_len, max_len)).bool()
+        self.register_buffer("causal_mask", causal.unsqueeze(0).unsqueeze(0))
+        self._init_weights()
+
+    def count_parameters(self) -> dict[str, int]:
+        def n(m): return sum(p.numel() for p in m.parameters())
+        norms = n(self.encoder.norm) + sum(
+            n(l.norm1) + n(l.norm2) for l in self.encoder.layers
+        )
+        return {
+            "embeddings": n(self.encoder.embedding),
+            "attention":  sum(n(l.self_attn) for l in self.encoder.layers),
+            "ffn":        sum(n(l.ff) for l in self.encoder.layers),
+            "norms":      norms,
+            "projection": n(self.projection),
+        }
+
+    def _init_weights(self) -> None:
+        for p in self.parameters():
+            if p.dim() > 1:
+                nn.init.xavier_uniform_(p)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        T = x.size(1)
+        mask = self.causal_mask[:, :, :T, :T]
+        if self.pad_idx is not None:
+            pad_mask = (x != self.pad_idx).unsqueeze(1).unsqueeze(2)
+            mask = mask & pad_mask
+        return self.projection(self.encoder(x, mask))
+
+    @torch.no_grad()
+    def generate(
+        self,
+        idx: torch.Tensor,
+        max_new_tokens: int,
+        temperature: float = 1.0,
+        eos_idx: int | None = None,
+    ) -> torch.Tensor:
+        self.eval()
+        max_len = self.causal_mask.size(-1)
+        for _ in range(max_new_tokens):
+            ctx = idx[:, -max_len:]
+            logits = self(ctx)[:, -1, :]
+            if temperature == 1.0:
+                next_tok = logits.argmax(dim=-1, keepdim=True)
+            else:
+                probs = torch.softmax(logits / temperature, dim=-1)
+                next_tok = torch.multinomial(probs, num_samples=1)
+            idx = torch.cat([idx, next_tok], dim=1)
+            if eos_idx is not None and (next_tok == eos_idx).all():
+                break
+        return idx

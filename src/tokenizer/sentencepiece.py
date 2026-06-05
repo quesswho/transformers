@@ -49,6 +49,8 @@ class SentencePieceBPE:
             if ch not in self.vocab:
                 self.vocab[ch] = len(self.vocab)
 
+        print(f"Initial vocab size: {len(self.vocab)} (including {NUM_SPECIAL} special tokens)")
+
         # Build pair counts and reverse index (pair → set of word IDs)
         pair_counts: dict[tuple[str, str], int] = {}
         pair_to_words: dict[tuple[str, str], set[int]] = {}

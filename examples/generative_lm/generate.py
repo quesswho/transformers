@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
 import torch
 
-from train import LanguageModel
+from transformer import DecoderOnlyTransformer
 from tokenizer import SentencePieceBPE
 
 
@@ -31,14 +31,14 @@ def main() -> None:
     cfg = checkpoint["config"]
     tokenizer = SentencePieceBPE.from_dict(checkpoint["tokenizer"])
 
-    model = LanguageModel(
+    model = DecoderOnlyTransformer(
         vocab_size=cfg["vocab_size"],
         d_model=cfg["d_model"],
         nhead=cfg["nhead"],
         num_layers=cfg["num_layers"],
         d_ff=cfg["d_ff"],
         dropout=cfg["dropout"],
-        block_size=cfg["block_size"],
+        max_len=cfg["block_size"],
     ).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
 
@@ -48,7 +48,7 @@ def main() -> None:
         sys.exit(1)
 
     ctx = torch.tensor([tokens], dtype=torch.long, device=device)
-    out = model.generate(ctx, steps=args.steps, temperature=args.temperature)
+    out = model.generate(ctx, max_new_tokens=args.steps, temperature=args.temperature)
     print(tokenizer.decode(out[0].tolist()))
 
 

@@ -2,7 +2,7 @@ from .attention import scaled_dot_product_attention, MultiHeadAttention
 from .layers import FeedForward, PositionalEncoding
 from .encoder import EncoderLayer, Encoder
 from .decoder import DecoderLayer, Decoder
-from .transformer import Transformer, make_src_mask, make_tgt_mask
+from .transformer import EncoderDecoderTransformer, DecoderOnlyTransformer, make_src_mask, make_tgt_mask
 
 __all__ = [
     "scaled_dot_product_attention",
@@ -13,7 +13,8 @@ __all__ = [
     "Encoder",
     "DecoderLayer",
     "Decoder",
-    "Transformer",
+    "EncoderDecoderTransformer",
+    "DecoderOnlyTransformer",
     "make_src_mask",
     "make_tgt_mask",
 ]
