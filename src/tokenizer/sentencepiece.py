@@ -144,11 +144,13 @@ class SentencePieceBPE:
 
     def encode(self, text: str) -> list[int]:
         marked = self._mark_spaces(text)
+        cache: dict[tuple[str, ...], list[int]] = {}
         ids: list[int] = []
         for word in self._split_into_words(marked):
-            merged = self._merge_word(word)
-            for token in merged:
-                ids.append(self.vocab.get(token, UNK_ID))
+            if word not in cache:
+                merged = self._merge_word(word)
+                cache[word] = [self.vocab.get(tok, UNK_ID) for tok in merged]
+            ids.extend(cache[word])
         return ids
 
     def decode(self, ids: list[int]) -> str:
@@ -198,31 +200,20 @@ class SentencePieceBPE:
         pieces = text.split(" ")
         if not pieces:
             return text
-        # First piece has no leading space; subsequent non-empty pieces get ▁
-        result = pieces[0]
-        for p in pieces[1:]:
-            if p:
-                result += SPIECE_UNDERLINE + p
-            else:
-                # Two consecutive spaces: emit a bare ▁ to preserve structure
-                result += SPIECE_UNDERLINE
-        return result
+        return pieces[0] + "".join(
+            SPIECE_UNDERLINE + p if p else SPIECE_UNDERLINE
+            for p in pieces[1:]
+        )
 
     @staticmethod
     def _split_into_words(marked: str) -> list[tuple[str, ...]]:
         """Split ▁-marked text into character-tuple 'words'."""
+        parts = marked.split(SPIECE_UNDERLINE)
         words: list[tuple[str, ...]] = []
-        current: list[str] = []
-        for ch in marked:
-            if ch == SPIECE_UNDERLINE and current:
-                words.append(tuple(current))
-                current = [SPIECE_UNDERLINE]
-            elif ch == SPIECE_UNDERLINE:
-                current = [SPIECE_UNDERLINE]
-            else:
-                current.append(ch)
-        if current:
-            words.append(tuple(current))
+        if parts[0]:
+            words.append(tuple(parts[0]))
+        for p in parts[1:]:
+            words.append(tuple(SPIECE_UNDERLINE + p))
         return words
 
     def _merge_word(self, word: tuple[str, ...]) -> tuple[str, ...]:

@@ -33,12 +33,11 @@ from tokenizer import SentencePieceBPE
 DATA_URL = "https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt"
 
 
-def save_checkpoint(path, model, optimizer, step, val_loss, tokenizer, config):
+def save_checkpoint(path, model, optimizer, step, tokenizer, config):
     torch.save({
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
         "step": step,
-        "val_loss": val_loss,
         "tokenizer": tokenizer.to_dict(),
         "config": config,
     }, path)
@@ -122,7 +121,7 @@ def main() -> None:
     parser.add_argument("--nhead", type=int, default=8, help="Number of attention heads (default: 8)")
     parser.add_argument("--num-layers", type=int, default=8, help="Number of transformer layers (default: 8)")
     parser.add_argument("--d-ff", type=int, default=1024, help="Feed-forward hidden dimension (default: 1024)")
-    parser.add_argument("--dropout", type=float, default=0.2, help="Dropout rate (default: 0.1)")
+    parser.add_argument("--dropout", type=float, default=0.1, help="Dropout rate (default: 0.1)")
     parser.add_argument("--lr", type=float, default=3e-4, help="AdamW learning rate (default: 3e-4)")
     parser.add_argument("--vocab-size", type=int, default=2000, help="SentencePiece vocab size (default: 2000)")
     parser.add_argument("--tokenizer", default=None, help="Path to a pre-trained tokenizer JSON file; skips BPE training")
@@ -140,6 +139,7 @@ def main() -> None:
     print(f"Training on {device}\n")
 
     text = load_text(args.data)
+    print(f"Finished loading text from {args.data}...")
     if args.tokenizer is not None:
         print(f"Loading tokenizer from {args.tokenizer}...")
         tokenizer = SentencePieceBPE.load(args.tokenizer)
@@ -206,11 +206,13 @@ def main() -> None:
     if args.resume:
         ckpt = torch.load(args.resume, map_location=device)
         model.load_state_dict(ckpt["model_state_dict"])
-        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
-        start_step = ckpt["step"] + 1
-        best_val_loss = ckpt.get("val_loss", float("inf"))
-        print(f"Resumed from {args.resume} — continuing from step {start_step} (best val={best_val_loss:.4f})\n")
+        if "optimizer_state_dict" in ckpt:
+            optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        if "step" in ckpt:
+            start_step = ckpt["step"] + 1
+        print(f"Resumed from {args.resume} at step {start_step}\n")
 
+    step = start_step - 1
     train_iter = iter(train_loader)
     for step in range(start_step, args.steps + 1):
         model.train()
@@ -242,17 +244,13 @@ def main() -> None:
             print(f"Step {step:5d}/{args.steps}  train={loss.item():.4f}  val={val_loss:.4f}")
             if args.checkpoint_dir is not None:
                 os.makedirs(args.checkpoint_dir, exist_ok=True)
-                save_checkpoint(os.path.join(args.checkpoint_dir, "latest.pt"), model, optimizer, step, val_loss, tokenizer, config)
+                save_checkpoint(os.path.join(args.checkpoint_dir, "latest.pt"), model, optimizer, step, tokenizer, config)
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
-                    save_checkpoint(os.path.join(args.checkpoint_dir, "best.pt"), model, optimizer, step, val_loss, tokenizer, config)
+                    save_checkpoint(os.path.join(args.checkpoint_dir, "best.pt"), model, optimizer, step, tokenizer, config)
                     print(f"  → new best checkpoint (val={val_loss:.4f})")
 
-    torch.save({
-        "model_state_dict": model.state_dict(),
-        "tokenizer": tokenizer.to_dict(),
-        "config": config,
-    }, args.output)
+    save_checkpoint(args.output, model, optimizer, step, tokenizer, config)
     print(f"\nModel saved → {args.output}")
 
     if args.prompt is not None:
