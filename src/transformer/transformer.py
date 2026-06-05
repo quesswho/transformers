@@ -35,6 +35,26 @@ class Transformer(nn.Module):
         self.projection = nn.Linear(d_model, tgt_vocab_size)
         self._init_weights()
 
+    def count_parameters(self) -> dict[str, int]:
+        def n(m): return sum(p.numel() for p in m.parameters())
+        enc_norms = n(self.encoder.norm) + sum(
+            n(l.norm1) + n(l.norm2) for l in self.encoder.layers
+        )
+        dec_norms = n(self.decoder.norm) + sum(
+            n(l.norm1) + n(l.norm2) + n(l.norm3) for l in self.decoder.layers
+        )
+        return {
+            "embeddings":         n(self.encoder.embedding) + n(self.decoder.embedding),
+            "encoder_attention":  sum(n(l.self_attn) for l in self.encoder.layers),
+            "encoder_ffn":        sum(n(l.ff) for l in self.encoder.layers),
+            "encoder_norms":      enc_norms,
+            "decoder_self_attn":  sum(n(l.self_attn) for l in self.decoder.layers),
+            "decoder_cross_attn": sum(n(l.cross_attn) for l in self.decoder.layers),
+            "decoder_ffn":        sum(n(l.ff) for l in self.decoder.layers),
+            "decoder_norms":      dec_norms,
+            "projection":         n(self.projection),
+        }
+
     def _init_weights(self) -> None:
         for p in self.parameters():
             if p.dim() > 1:

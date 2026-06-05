@@ -33,6 +33,17 @@ from tokenizer import SentencePieceBPE
 DATA_URL = "https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt"
 
 
+def save_checkpoint(path, model, optimizer, step, val_loss, tokenizer, config):
+    torch.save({
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "step": step,
+        "val_loss": val_loss,
+        "tokenizer": tokenizer.to_dict(),
+        "config": config,
+    }, path)
+
+
 def load_text(path: str | None) -> str:
     if path is not None:
         with open(path, "r", encoding="utf-8") as f:
@@ -108,15 +119,17 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=64, help="Batch size (default: 64)")
     parser.add_argument("--block-size", type=int, default=256, help="Context window length (default: 256)")
     parser.add_argument("--d-model", type=int, default=256, help="Model embedding dimension (default: 256)")
-    parser.add_argument("--nhead", type=int, default=4, help="Number of attention heads (default: 4)")
-    parser.add_argument("--num-layers", type=int, default=4, help="Number of transformer layers (default: 4)")
+    parser.add_argument("--nhead", type=int, default=8, help="Number of attention heads (default: 8)")
+    parser.add_argument("--num-layers", type=int, default=8, help="Number of transformer layers (default: 8)")
     parser.add_argument("--d-ff", type=int, default=1024, help="Feed-forward hidden dimension (default: 1024)")
-    parser.add_argument("--dropout", type=float, default=0.1, help="Dropout rate (default: 0.1)")
+    parser.add_argument("--dropout", type=float, default=0.2, help="Dropout rate (default: 0.1)")
     parser.add_argument("--lr", type=float, default=3e-4, help="AdamW learning rate (default: 3e-4)")
     parser.add_argument("--vocab-size", type=int, default=2000, help="SentencePiece vocab size (default: 2000)")
     parser.add_argument("--tokenizer", default=None, help="Path to a pre-trained tokenizer JSON file; skips BPE training")
     parser.add_argument("--save-tokenizer", default=None, help="Save the tokenizer to this JSON file after training/loading")
     parser.add_argument("--val-interval", type=int, default=500, help="Validate every N steps (default: 500)")
+    parser.add_argument("--checkpoint-dir", default=None, help="Directory for periodic checkpoints (default: disabled)")
+    parser.add_argument("--resume", default=None, help="Path to a checkpoint to resume training from")
     parser.add_argument("--prompt", default=None, help="Seed text for sample generation after training")
     parser.add_argument("--generate-steps", type=int, default=500, help="Tokens to generate after training (default: 500)")
     parser.add_argument("--temperature", type=float, default=0.8, help="Sampling temperature (default: 0.8)")
@@ -167,14 +180,39 @@ def main() -> None:
         block_size=args.block_size,
     ).to(device)
 
-    n_params = sum(p.numel() for p in model.parameters())
-    print(f"Parameters: {n_params:,}\n")
+    enc_counts = model.encoder.count_parameters()
+    counts = {**enc_counts, "head": sum(p.numel() for p in model.head.parameters())}
+    total = sum(counts.values())
+    print(f"{'Component':<25} {'Params':>12}  {'%':>6}")
+    for name, val in counts.items():
+        print(f"  {name:<23} {val:>12,}  {val/total*100:>5.1f}%")
+    print(f"  {'TOTAL':<23} {total:>12,}\n")
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
+    config = {
+        "vocab_size": vocab_size,
+        "d_model": args.d_model,
+        "nhead": args.nhead,
+        "num_layers": args.num_layers,
+        "d_ff": args.d_ff,
+        "dropout": args.dropout,
+        "block_size": args.block_size,
+    }
+
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.1)
     criterion = nn.CrossEntropyLoss()
 
+    start_step = 1
+    best_val_loss = float("inf")
+    if args.resume:
+        ckpt = torch.load(args.resume, map_location=device)
+        model.load_state_dict(ckpt["model_state_dict"])
+        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        start_step = ckpt["step"] + 1
+        best_val_loss = ckpt.get("val_loss", float("inf"))
+        print(f"Resumed from {args.resume} — continuing from step {start_step} (best val={best_val_loss:.4f})\n")
+
     train_iter = iter(train_loader)
-    for step in range(1, args.steps + 1):
+    for step in range(start_step, args.steps + 1):
         model.train()
         try:
             x, y = next(train_iter)
@@ -202,19 +240,18 @@ def main() -> None:
                         break
             val_loss = sum(val_losses) / len(val_losses)
             print(f"Step {step:5d}/{args.steps}  train={loss.item():.4f}  val={val_loss:.4f}")
+            if args.checkpoint_dir is not None:
+                os.makedirs(args.checkpoint_dir, exist_ok=True)
+                save_checkpoint(os.path.join(args.checkpoint_dir, "latest.pt"), model, optimizer, step, val_loss, tokenizer, config)
+                if val_loss < best_val_loss:
+                    best_val_loss = val_loss
+                    save_checkpoint(os.path.join(args.checkpoint_dir, "best.pt"), model, optimizer, step, val_loss, tokenizer, config)
+                    print(f"  → new best checkpoint (val={val_loss:.4f})")
 
     torch.save({
         "model_state_dict": model.state_dict(),
         "tokenizer": tokenizer.to_dict(),
-        "config": {
-            "vocab_size": vocab_size,
-            "d_model": args.d_model,
-            "nhead": args.nhead,
-            "num_layers": args.num_layers,
-            "d_ff": args.d_ff,
-            "dropout": args.dropout,
-            "block_size": args.block_size,
-        },
+        "config": config,
     }, args.output)
     print(f"\nModel saved → {args.output}")
 

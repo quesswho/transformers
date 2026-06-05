@@ -42,6 +42,15 @@ class Encoder(nn.Module):
         self.norm = nn.LayerNorm(d_model)
         self.d_model = d_model
 
+    def count_parameters(self) -> dict[str, int]:
+        def n(m): return sum(p.numel() for p in m.parameters())
+        return {
+            "embeddings":  n(self.embedding),
+            "attention":   sum(n(l.self_attn) for l in self.layers),
+            "ffn":         sum(n(l.ff) for l in self.layers),
+            "layer_norms": n(self.norm) + sum(n(l.norm1) + n(l.norm2) for l in self.layers),
+        }
+
     def forward(self, src: torch.Tensor, src_mask: torch.Tensor | None = None) -> torch.Tensor:
         x = self.pos_encoding(self.embedding(src) * math.sqrt(self.d_model))
         for layer in self.layers:

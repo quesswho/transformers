@@ -25,9 +25,10 @@ class DecoderLayer(nn.Module):
         src_mask: torch.Tensor | None = None,
         tgt_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        x = self.norm1(x + self.dropout(self.self_attn(x, x, x, tgt_mask)))
-        x = self.norm2(x + self.dropout(self.cross_attn(x, enc_output, enc_output, src_mask)))
-        x = self.norm3(x + self.dropout(self.ff(x)))
+        # We use Pre-norm as it produces more stable training
+        x = x + self.norm1(self.dropout(self.self_attn(x, x, x, tgt_mask)))
+        x = x + self.norm2(self.dropout(self.cross_attn(x, enc_output, enc_output, src_mask)))
+        x = x + self.norm3(self.dropout(self.ff(x)))
         return x
 
 
