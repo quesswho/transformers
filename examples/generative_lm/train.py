@@ -81,9 +81,9 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=64, help="Batch size (default: 64)")
     parser.add_argument("--block-size", type=int, default=256, help="Context window length (default: 256)")
     parser.add_argument("--d-model", type=int, default=256, help="Model embedding dimension (default: 256)")
-    parser.add_argument("--nhead", type=int, default=8, help="Number of attention heads (default: 8)")
-    parser.add_argument("--num-layers", type=int, default=8, help="Number of transformer layers (default: 8)")
-    parser.add_argument("--d-ff", type=int, default=1024, help="Feed-forward hidden dimension (default: 1024)")
+    parser.add_argument("--nhead", type=int, default=4, help="Number of attention heads (default: 8)")
+    parser.add_argument("--num-layers", type=int, default=6, help="Number of transformer layers (default: 8)")
+    parser.add_argument("--d-ff", type=int, default=None, help="Feed-forward hidden dimension (default: 8/3 * d_model)")
     parser.add_argument("--dropout", type=float, default=0.1, help="Dropout rate (default: 0.1)")
     parser.add_argument("--lr", type=float, default=3e-4, help="AdamW learning rate (default: 3e-4)")
     parser.add_argument("--vocab-size", type=int, default=2000, help="SentencePiece vocab size (default: 2000)")
@@ -92,11 +92,13 @@ def main() -> None:
     parser.add_argument("--val-interval", type=int, default=500, help="Validate every N steps (default: 500)")
     parser.add_argument("--checkpoint-dir", default=None, help="Directory for periodic checkpoints (default: disabled)")
     parser.add_argument("--resume", default=None, help="Path to a checkpoint to resume training from")
-    parser.add_argument("--prompt", default=None, help="Seed text for sample generation after training")
-    parser.add_argument("--generate-steps", type=int, default=500, help="Tokens to generate after training (default: 500)")
-    parser.add_argument("--temperature", type=float, default=0.8, help="Sampling temperature (default: 0.8)")
     parser.add_argument("--vocab-only", action="store_true", help="Build and save the tokenizer then exit without training")
     args = parser.parse_args()
+
+    # We scale the feed-forward dimension
+    # as suggested in https://arxiv.org/pdf/2002.05202
+    if args.d_ff is None:
+        args.d_ff = round(8 / 3 * args.d_model)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Training on {device}\n")
@@ -214,12 +216,6 @@ def main() -> None:
 
     save_checkpoint(args.output, model, optimizer, step, tokenizer, config)
     print(f"\nModel saved → {args.output}")
-
-    if args.prompt is not None:
-        print(f"\n--- Generated text (temperature={args.temperature}) ---\n")
-        ctx = torch.tensor([tokenizer.encode(args.prompt)], dtype=torch.long, device=device)
-        out = model.generate(ctx, max_new_tokens=args.generate_steps, temperature=args.temperature)
-        print(tokenizer.decode(out[0].tolist()))
 
 
 if __name__ == "__main__":

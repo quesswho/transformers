@@ -6,15 +6,14 @@ import torch.nn as nn
 class FeedForward(nn.Module):
     def __init__(self, d_model: int = 512, d_ff: int = 2048, dropout: float = 0.1) -> None:
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(d_model, d_ff),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(d_ff, d_model),
-        )
+        self.w_gate = nn.Linear(d_model, d_ff, bias=False)
+        self.w_value = nn.Linear(d_model, d_ff, bias=False)
+        self.w_out = nn.Linear(d_ff, d_model, bias=False)
+        self.act = nn.SiLU()
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x)
+        return self.w_out(self.dropout(self.act(self.w_gate(x)) * self.w_value(x)))
 
 
 class PositionalEncoding(nn.Module):

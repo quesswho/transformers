@@ -8,5 +8,7 @@ dist/
 build/
 .pytest_cache/
 *.pt
+*.pyd
 data/
 models/
+logs/
