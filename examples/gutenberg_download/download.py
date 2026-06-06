@@ -8,9 +8,6 @@ Run from project root:
     python examples/gutenberg_download/download.py
     python examples/gutenberg_download/download.py --target-mb 200
     python examples/gutenberg_download/download.py --target-mb 500 --output data/corpus.txt
-
-Then train:
-    python examples/generative_lm/train.py --data data/gutenberg_corpus.txt
 """
 
 import argparse
@@ -20,6 +17,8 @@ import re
 import time
 import urllib.request
 from pathlib import Path
+
+from preprocess import preprocess_text
 
 CATALOG_URL = "https://www.gutenberg.org/cache/epub/feeds/pg_catalog.csv"
 BOOK_URL    = "https://www.gutenberg.org/cache/epub/{id}/pg{id}.txt"
@@ -64,6 +63,8 @@ def main() -> None:
                         help="Directory for individual book cache (default: data/gutenberg)")
     parser.add_argument("--delay",      type=float, default=1.0,
                         help="Seconds between downloads (default: 1.0)")
+    parser.add_argument("--no-preprocess", action="store_true", default=False,
+                        help="Skip text preprocessing (write raw stripped text to corpus)")
     args = parser.parse_args()
 
     cache_dir = Path(args.cache_dir)
@@ -116,6 +117,13 @@ def main() -> None:
                     f.write(text)
                 label = "downloaded"
                 downloaded += 1
+
+            if not text:
+                skipped += 1
+                continue
+
+            if not args.no_preprocess:
+                text = preprocess_text(text)
 
             if not text:
                 skipped += 1

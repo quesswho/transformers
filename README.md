@@ -4,11 +4,16 @@ Transformer implementations in PyTorch for educational purposes
 
 ## Build
 
-The BPE tokenizer has a C++ core that must be compiled before use:
+The BPE tokenizer has a C++ core (pybind11 extension) that must be compiled before use.
 
+**Requirements:** [Visual Studio Build Tools 2026](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with the "Desktop development with C++" workload, CMake 3.21+, pybind11 (`pip install pybind11>=2.12`).
+
+```powershell
+cmake -B build -G "Visual Studio 18 2026" -A x64 -DPython3_EXECUTABLE=.venv\Scripts\python.exe
+cmake --build build --config Release
 ```
-python setup.py build_ext --inplace
-```
+
+Replace `.venv\Scripts\python.exe` with the path to your Python 3.12 interpreter if not using a local venv. The compiled `.pyd` is placed in `src/tokenizer/` automatically.
 
 ## Training data
 
