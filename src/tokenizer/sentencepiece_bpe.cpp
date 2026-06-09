@@ -1,4 +1,5 @@
 #include <pybind11/pybind11.h>
+#include <pybind11/numpy.h>
 #include <pybind11/stl.h>
 
 #include <algorithm>
@@ -254,24 +255,30 @@ public:
     // Encode / Decode
     // ------------------------------------------------------------------
 
-    std::vector<int> encode(const std::string& text) {
-        std::vector<int> ids;
-        for_each_word(text, [&](const std::vector<std::string>& word) {
-            std::string k = word_key(word);
-            auto it = encode_cache_.find(k);
-            if (it == encode_cache_.end()) {
-                auto merged = merge_word(word);
-                std::vector<int> word_ids;
-                word_ids.reserve(merged.size());
-                for (auto& tok : merged) {
-                    auto vit = vocab_.find(tok);
-                    word_ids.push_back(vit != vocab_.end() ? vit->second : UNK_ID);
+    py::array_t<int32_t> encode(const std::string& text) {
+        std::vector<int32_t> ids;
+        {
+            py::gil_scoped_release release;
+            for_each_word(text, [&](const std::vector<std::string>& word) {
+                std::string k = word_key(word);
+                auto it = encode_cache_.find(k);
+                if (it == encode_cache_.end()) {
+                    auto merged = merge_word(word);
+                    std::vector<int> word_ids;
+                    word_ids.reserve(merged.size());
+                    for (auto& tok : merged) {
+                        auto vit = vocab_.find(tok);
+                        word_ids.push_back(vit != vocab_.end() ? vit->second : UNK_ID);
+                    }
+                    it = encode_cache_.emplace(k, std::move(word_ids)).first;
                 }
-                it = encode_cache_.emplace(k, std::move(word_ids)).first;
-            }
-            ids.insert(ids.end(), it->second.begin(), it->second.end());
-        });
-        return ids;
+                for (int id : it->second)
+                    ids.push_back(static_cast<int32_t>(id));
+            });
+        }
+        py::array_t<int32_t> arr(static_cast<py::ssize_t>(ids.size()));
+        std::copy(ids.begin(), ids.end(), arr.mutable_data());
+        return arr;
     }
 
     std::string decode(const std::vector<int>& ids) {

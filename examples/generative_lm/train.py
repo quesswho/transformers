@@ -16,11 +16,14 @@ Run from project root:
 """
 
 import argparse
+import hashlib
 import os
 import random
 import sys
 import tempfile
 import urllib.request
+
+import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
@@ -58,8 +61,35 @@ def load_text(path: str | None) -> str:
     return text
 
 
+def _tokenizer_fingerprint(tokenizer) -> str:
+    d = tokenizer.to_dict()
+    raw = str(sorted(d.get("vocab", {}).items())) + str(d.get("merges", []))
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+
+def _load_tokens(text: str, tokenizer, data_path: str | None) -> np.ndarray:
+    cache_path = None
+    if data_path is not None:
+        stat = os.stat(data_path)
+        key = f"{stat.st_size}_{int(stat.st_mtime)}_{_tokenizer_fingerprint(tokenizer)}"
+        cache_path = data_path + f".{key}.tokens.npy"
+        if os.path.exists(cache_path):
+            print(f"Loading cached tokens from {cache_path}...")
+            return np.load(cache_path, mmap_mode="r")
+
+    print("Encoding corpus...")
+    tokens = tokenizer.encode(text)
+    arr = np.asarray(tokens, dtype=np.int32)
+
+    if cache_path is not None:
+        np.save(cache_path, arr)
+        print(f"Token cache written → {cache_path}")
+
+    return arr
+
+
 class CharDataset(Dataset):
-    def __init__(self, data: list[int], block_size: int) -> None:
+    def __init__(self, data: np.ndarray, block_size: int) -> None:
         self.data = data
         self.block_size = block_size
 
@@ -130,7 +160,7 @@ def main() -> None:
             print("Warning: --vocab-only set but --save-tokenizer not specified; tokenizer was not saved.")
         return
 
-    data = tokenizer.encode(text)
+    data = _load_tokens(text, tokenizer, args.data)
     vocab_size = tokenizer.vocab_size
 
     split = int(0.9 * len(data))
@@ -139,7 +169,7 @@ def main() -> None:
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=False, drop_last=True)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, drop_last=True)
 
-    print(f"Vocab size: {vocab_size}  |  Train tokens: {len(data[:split]):,}  |  Val tokens: {len(data[split:]):,}\n")
+    print(f"Vocab size: {vocab_size}  |  Train tokens: {split:,}  |  Val tokens: {len(data) - split:,}\n")
 
     model = DecoderOnlyTransformer(
         vocab_size=vocab_size,
