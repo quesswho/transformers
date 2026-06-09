@@ -15,6 +15,15 @@ def make_tgt_mask(tgt: torch.Tensor, pad_idx: int = 0) -> torch.Tensor:
     return causal & padding
 
 
+def load_model_state_dict(model: nn.Module, state_dict: dict) -> None:
+    incompatible = model.load_state_dict(state_dict, strict=False)
+    if incompatible.missing_keys:
+        raise RuntimeError(
+            f"Missing key(s) in state_dict (model weights not restored): "
+            f"{incompatible.missing_keys}"
+        )
+
+
 class EncoderDecoderTransformer(nn.Module):
     def __init__(
         self,
@@ -61,25 +70,27 @@ class EncoderDecoderTransformer(nn.Module):
                 nn.init.xavier_uniform_(p)
 
     def encode(self, src: torch.Tensor, src_mask: torch.Tensor) -> torch.Tensor:
-        return self.encoder(src, src_mask)
+        enc_output, _ = self.encoder(src, src_mask)
+        return enc_output
 
     def decode(
         self,
         tgt: torch.Tensor,
         enc_output: torch.Tensor,
         src_mask: torch.Tensor,
-        tgt_mask: torch.Tensor,
-    ) -> torch.Tensor:
-        return self.decoder(tgt, enc_output, src_mask, tgt_mask)
+        tgt_mask: torch.Tensor | None,
+        past_key_values: list | None = None,
+    ) -> tuple[torch.Tensor, list]:
+        return self.decoder(tgt, enc_output, src_mask, tgt_mask, past_key_values)
 
     def forward(self, src: torch.Tensor, tgt: torch.Tensor) -> torch.Tensor:
         src_mask = make_src_mask(src, self.pad_idx)
         tgt_mask = make_tgt_mask(tgt, self.pad_idx)
         enc_output = self.encode(src, src_mask)
-        dec_output = self.decode(tgt, enc_output, src_mask, tgt_mask)
+        dec_output, _ = self.decode(tgt, enc_output, src_mask, tgt_mask)
         return self.projection(dec_output)
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def generate(
         self,
         src: torch.Tensor,
@@ -91,10 +102,12 @@ class EncoderDecoderTransformer(nn.Module):
         src_mask = make_src_mask(src, self.pad_idx)
         enc_output = self.encode(src, src_mask)
         tgt = torch.tensor([[sos_idx]], device=src.device)
+        past_key_values = None
         result = []
         for _ in range(max_len):
-            tgt_mask = make_tgt_mask(tgt, self.pad_idx)
-            dec_output = self.decode(tgt, enc_output, src_mask, tgt_mask)
+            tgt_input = tgt if past_key_values is None else tgt[:, -1:]
+            tgt_mask = make_tgt_mask(tgt, self.pad_idx) if past_key_values is None else None
+            dec_output, past_key_values = self.decode(tgt_input, enc_output, src_mask, tgt_mask, past_key_values)
             next_token = self.projection(dec_output[:, -1, :]).argmax(dim=-1).item()
             if next_token == eos_idx:
                 break
@@ -147,9 +160,10 @@ class DecoderOnlyTransformer(nn.Module):
         if self.pad_idx is not None:
             pad_mask = (x != self.pad_idx).unsqueeze(1).unsqueeze(2)
             mask = mask & pad_mask
-        return self.projection(self.encoder(x, mask))
+        hidden, _ = self.encoder(x, mask)
+        return self.projection(hidden)
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def generate(
         self,
         idx: torch.Tensor,
@@ -159,9 +173,20 @@ class DecoderOnlyTransformer(nn.Module):
     ) -> torch.Tensor:
         self.eval()
         max_len = self.causal_mask.size(-1)
+        past_key_values = None
         for _ in range(max_new_tokens):
-            ctx = idx[:, -max_len:]
-            logits = self(ctx)[:, -1, :]
+            if past_key_values is None:
+                ctx = idx[:, -max_len:]
+                T = ctx.size(1)
+                mask = self.causal_mask[:, :, :T, :T]
+                if self.pad_idx is not None:
+                    pad_mask = (ctx != self.pad_idx).unsqueeze(1).unsqueeze(2)
+                    mask = mask & pad_mask
+                hidden, past_key_values = self.encoder(ctx, mask)
+            else:
+                T = past_key_values[0][0].size(2)
+                hidden, past_key_values = self.encoder(idx[:, -1:], src_mask=None, past_key_values=past_key_values, offset=T)
+            logits = self.projection(hidden)[:, -1, :]
             if temperature == 1.0:
                 next_tok = logits.argmax(dim=-1, keepdim=True)
             else:

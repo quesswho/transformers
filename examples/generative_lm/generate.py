@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
 import torch
 
-from transformer import DecoderOnlyTransformer
+from transformer import DecoderOnlyTransformer, load_model_state_dict
 from tokenizer import SentencePieceBPE
 
 
@@ -23,6 +23,7 @@ def main() -> None:
     parser.add_argument("--prompt", default="ROMEO:", help="Seed text to start generation from")
     parser.add_argument("--steps", type=int, default=500, help="Number of tokens to generate")
     parser.add_argument("--temperature", type=float, default=0.8, help="Sampling temperature (higher = more random)")
+    parser.add_argument("--compile", action="store_true", help="torch.compile the model before generating (slow first run, faster afterwards)")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -40,7 +41,10 @@ def main() -> None:
         dropout=cfg["dropout"],
         max_len=cfg["block_size"],
     ).to(device)
-    model.load_state_dict(checkpoint["model_state_dict"])
+    load_model_state_dict(model, checkpoint["model_state_dict"])
+
+    if args.compile:
+        model = torch.compile(model)
 
     tokens = tokenizer.encode(args.prompt)
     if not tokens:

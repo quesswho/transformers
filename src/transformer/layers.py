@@ -3,6 +3,17 @@ import torch
 import torch.nn as nn
 
 
+class RMSNorm(nn.Module):
+    def __init__(self, d_model: int, eps: float = 1e-6) -> None:
+        super().__init__()
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(d_model))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        rms = x.pow(2).mean(-1, keepdim=True).add(self.eps).sqrt()
+        return x / rms * self.weight
+
+
 class FeedForward(nn.Module):
     def __init__(self, d_model: int = 512, d_ff: int = 2048, dropout: float = 0.1) -> None:
         super().__init__()
@@ -28,6 +39,7 @@ class PositionalEncoding(nn.Module):
         pe[0, :, 1::2] = torch.cos(position * div_term)
         self.register_buffer("pe", pe)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = x + self.pe[:, : x.size(1), :]
+    def forward(self, x: torch.Tensor, offset: int = 0) -> torch.Tensor:
+        offset = min(offset, self.pe.size(1) - x.size(1))
+        x = x + self.pe[:, offset : offset + x.size(1), :]
         return self.dropout(x)

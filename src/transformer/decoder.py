@@ -2,7 +2,7 @@ import math
 import torch
 import torch.nn as nn
 from .attention import MultiHeadAttention
-from .layers import FeedForward, PositionalEncoding
+from .layers import FeedForward, PositionalEncoding, RMSNorm
 
 
 class DecoderLayer(nn.Module):
@@ -13,9 +13,9 @@ class DecoderLayer(nn.Module):
         self.self_attn = MultiHeadAttention(d_model, nhead, dropout)
         self.cross_attn = MultiHeadAttention(d_model, nhead, dropout)
         self.ff = FeedForward(d_model, d_ff, dropout)
-        self.norm1 = nn.LayerNorm(d_model)
-        self.norm2 = nn.LayerNorm(d_model)
-        self.norm3 = nn.LayerNorm(d_model)
+        self.norm1 = RMSNorm(d_model)
+        self.norm2 = RMSNorm(d_model)
+        self.norm3 = RMSNorm(d_model)
         self.dropout = nn.Dropout(dropout)
 
     def forward(
@@ -24,12 +24,15 @@ class DecoderLayer(nn.Module):
         enc_output: torch.Tensor,
         src_mask: torch.Tensor | None = None,
         tgt_mask: torch.Tensor | None = None,
-    ) -> torch.Tensor:
+        past_kv: tuple[torch.Tensor, torch.Tensor] | None = None,
+    ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
         # We use Pre-norm as it produces more stable training
-        x = x + self.norm1(self.dropout(self.self_attn(x, x, x, tgt_mask)))
-        x = x + self.norm2(self.dropout(self.cross_attn(x, enc_output, enc_output, src_mask)))
+        self_out, present_kv = self.self_attn(x, x, x, tgt_mask, past_kv)
+        x = x + self.norm1(self.dropout(self_out))
+        cross_out, _ = self.cross_attn(x, enc_output, enc_output, src_mask)
+        x = x + self.norm2(self.dropout(cross_out))
         x = x + self.norm3(self.dropout(self.ff(x)))
-        return x
+        return x, present_kv
 
 
 class Decoder(nn.Module):
@@ -49,7 +52,7 @@ class Decoder(nn.Module):
         self.layers = nn.ModuleList(
             [DecoderLayer(d_model, nhead, d_ff, dropout) for _ in range(num_layers)]
         )
-        self.norm = nn.LayerNorm(d_model)
+        self.norm = RMSNorm(d_model)
         self.d_model = d_model
 
     def forward(
@@ -58,8 +61,13 @@ class Decoder(nn.Module):
         enc_output: torch.Tensor,
         src_mask: torch.Tensor | None = None,
         tgt_mask: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        x = self.pos_encoding(self.embedding(tgt) * math.sqrt(self.d_model))
-        for layer in self.layers:
-            x = layer(x, enc_output, src_mask, tgt_mask)
-        return self.norm(x)
+        past_key_values: list[tuple[torch.Tensor, torch.Tensor]] | None = None,
+    ) -> tuple[torch.Tensor, list[tuple[torch.Tensor, torch.Tensor]]]:
+        offset = past_key_values[0][0].size(2) if past_key_values is not None else 0
+        x = self.pos_encoding(self.embedding(tgt) * math.sqrt(self.d_model), offset=offset)
+        present_key_values = []
+        for i, layer in enumerate(self.layers):
+            past_kv = past_key_values[i] if past_key_values is not None else None
+            x, kv = layer(x, enc_output, src_mask, tgt_mask, past_kv)
+            present_key_values.append(kv)
+        return self.norm(x), present_key_values

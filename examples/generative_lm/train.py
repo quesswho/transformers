@@ -17,6 +17,7 @@ Run from project root:
 
 import argparse
 import os
+import random
 import sys
 import tempfile
 import urllib.request
@@ -27,7 +28,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 
-from transformer import DecoderOnlyTransformer
+from transformer import DecoderOnlyTransformer, load_model_state_dict
 from tokenizer import SentencePieceBPE
 
 DATA_URL = "https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt"
@@ -65,8 +66,9 @@ class CharDataset(Dataset):
     def __len__(self) -> int:
         return len(self.data) - self.block_size
 
-    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
-        chunk = self.data[idx : idx + self.block_size + 1]
+    def __getitem__(self, _: int) -> tuple[torch.Tensor, torch.Tensor]:
+        i = random.randint(0, len(self.data) - self.block_size - 1)
+        chunk = self.data[i : i + self.block_size + 1]
         x = torch.tensor(chunk[:-1], dtype=torch.long)
         y = torch.tensor(chunk[1:], dtype=torch.long)
         return x, y
@@ -93,6 +95,7 @@ def main() -> None:
     parser.add_argument("--checkpoint-dir", default=None, help="Directory for periodic checkpoints (default: disabled)")
     parser.add_argument("--resume", default=None, help="Path to a checkpoint to resume training from")
     parser.add_argument("--vocab-only", action="store_true", help="Build and save the tokenizer then exit without training")
+    parser.add_argument("--compile", action="store_true", help="torch.compile the model before training (slow first step, faster afterwards)")
     args = parser.parse_args()
 
     # We scale the feed-forward dimension
@@ -116,6 +119,9 @@ def main() -> None:
         print(f"Tokenizer trained. Vocab size: {tokenizer.vocab_size}\n")
 
     if args.save_tokenizer is not None:
+        save_dir = os.path.dirname(args.save_tokenizer)
+        if save_dir:
+            os.makedirs(save_dir, exist_ok=True)
         tokenizer.save(args.save_tokenizer)
         print(f"Tokenizer saved → {args.save_tokenizer}\n")
 
@@ -130,7 +136,7 @@ def main() -> None:
     split = int(0.9 * len(data))
     train_dataset = CharDataset(data[:split], args.block_size)
     val_dataset = CharDataset(data[split:], args.block_size)
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, drop_last=True)
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=False, drop_last=True)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, drop_last=True)
 
     print(f"Vocab size: {vocab_size}  |  Train tokens: {len(data[:split]):,}  |  Val tokens: {len(data[split:]):,}\n")
@@ -169,12 +175,18 @@ def main() -> None:
     best_val_loss = float("inf")
     if args.resume:
         ckpt = torch.load(args.resume, map_location=device)
-        model.load_state_dict(ckpt["model_state_dict"])
+        load_model_state_dict(model, ckpt["model_state_dict"])
         if "optimizer_state_dict" in ckpt:
-            optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+            try:
+                optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+            except ValueError:
+                print("Warning: optimizer state skipped (parameter layout changed); optimizer restarted.\n")
         if "step" in ckpt:
             start_step = ckpt["step"] + 1
         print(f"Resumed from {args.resume} at step {start_step}\n")
+
+    if args.compile:
+        model = torch.compile(model)
 
     step = start_step - 1
     train_iter = iter(train_loader)

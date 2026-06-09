@@ -1,23 +1,7 @@
 import math
 import torch
 import torch.nn as nn
-
-
-def scaled_dot_product_attention(
-    query: torch.Tensor,
-    key: torch.Tensor,
-    value: torch.Tensor,
-    mask: torch.Tensor | None = None,
-    dropout: nn.Dropout | None = None,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    d_k = query.size(-1)
-    scores = torch.matmul(query, key.transpose(-2, -1)) / math.sqrt(d_k)
-    if mask is not None:
-        scores = scores.masked_fill(mask == 0, -1e9)
-    weights = torch.softmax(scores, dim=-1)
-    if dropout is not None:
-        weights = dropout(weights)
-    return torch.matmul(weights, value), weights
+import torch.nn.functional as F
 
 
 class MultiHeadAttention(nn.Module):
@@ -38,7 +22,8 @@ class MultiHeadAttention(nn.Module):
         key: torch.Tensor,
         value: torch.Tensor,
         mask: torch.Tensor | None = None,
-    ) -> torch.Tensor:
+        past_kv: tuple[torch.Tensor, torch.Tensor] | None = None,
+    ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
         B = query.size(0)
 
         def project_and_split(linear, x):
@@ -48,6 +33,11 @@ class MultiHeadAttention(nn.Module):
         k = project_and_split(self.w_k, key)
         v = project_and_split(self.w_v, value)
 
-        attn_out, _ = scaled_dot_product_attention(q, k, v, mask, self.dropout)
+        if past_kv is not None:
+            k = torch.cat([past_kv[0], k], dim=2)
+            v = torch.cat([past_kv[1], v], dim=2)
+
+        dropout_p = self.dropout.p if self.training else 0.0
+        attn_out = F.scaled_dot_product_attention(q, k, v, attn_mask=mask, dropout_p=dropout_p)
         attn_out = attn_out.transpose(1, 2).contiguous().view(B, -1, self.nhead * self.d_k)
-        return self.w_o(attn_out)
+        return self.w_o(attn_out), (k, v)
