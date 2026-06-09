@@ -21,6 +21,7 @@ import os
 import random
 import sys
 import tempfile
+import time
 import urllib.request
 
 import numpy as np
@@ -122,6 +123,7 @@ def main() -> None:
     parser.add_argument("--tokenizer", default=None, help="Path to a pre-trained tokenizer JSON file; skips BPE training")
     parser.add_argument("--save-tokenizer", default=None, help="Save the tokenizer to this JSON file after training/loading")
     parser.add_argument("--val-interval", type=int, default=500, help="Validate every N steps (default: 500)")
+    parser.add_argument("--log-interval", type=int, default=100, help="Log training speed every N steps (default: 100)")
     parser.add_argument("--checkpoint-dir", default=None, help="Directory for periodic checkpoints (default: disabled)")
     parser.add_argument("--resume", default=None, help="Path to a checkpoint to resume training from")
     parser.add_argument("--vocab-only", action="store_true", help="Build and save the tokenizer then exit without training")
@@ -220,6 +222,19 @@ def main() -> None:
 
     step = start_step - 1
     train_iter = iter(train_loader)
+
+    # Speed measurement: GPU work is async, so the clock is only read after a
+    # synchronize. The first window (warmup: cuDNN autotune, allocator growth,
+    # torch.compile) is excluded from the reported average, as is validation.
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+    window_start = time.perf_counter()
+    window_tokens = 0
+    window_steps = 0
+    warmup_window = True
+    measured_time = 0.0
+    measured_tokens = 0
+
     for step in range(start_step, args.steps + 1):
         model.train()
         try:
@@ -235,6 +250,24 @@ def main() -> None:
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
+
+        window_tokens += x.numel()
+        window_steps += 1
+
+        if step % args.log_interval == 0:
+            if device.type == "cuda":
+                torch.cuda.synchronize()
+            dt = time.perf_counter() - window_start
+            tok_per_s = window_tokens / dt
+            ms_per_step = dt / window_steps * 1000
+            note = "  (warmup, excluded from avg)" if warmup_window else ""
+            print(f"Step {step:5d}/{args.steps}  train={loss.item():.4f}  "
+                  f"{tok_per_s:>10,.0f} tok/s  {ms_per_step:7.1f} ms/step{note}")
+            if warmup_window:
+                warmup_window = False
+            else:
+                measured_time += dt
+                measured_tokens += window_tokens
 
         if step % args.val_interval == 0:
             model.eval()
@@ -255,6 +288,21 @@ def main() -> None:
                     best_val_loss = val_loss
                     save_checkpoint(os.path.join(args.checkpoint_dir, "best.pt"), model, optimizer, step, tokenizer, config)
                     print(f"  → new best checkpoint (val={val_loss:.4f})")
+
+        # Restart the measurement window after any pause (logging sync,
+        # validation, checkpointing) so only pure training steps are timed.
+        if step % args.log_interval == 0 or step % args.val_interval == 0:
+            if device.type == "cuda":
+                torch.cuda.synchronize()
+            window_start = time.perf_counter()
+            window_tokens = 0
+            window_steps = 0
+
+    if measured_tokens > 0:
+        print(f"\nAvg training speed: {measured_tokens / measured_time:,.0f} tok/s "
+              f"({measured_tokens:,} tokens in {measured_time:.1f}s, warmup & validation excluded)")
+    if device.type == "cuda":
+        print(f"Peak GPU memory: {torch.cuda.max_memory_allocated() / 1024**2:,.0f} MiB")
 
     save_checkpoint(args.output, model, optimizer, step, tokenizer, config)
     print(f"\nModel saved → {args.output}")
