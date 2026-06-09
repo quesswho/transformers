@@ -23,6 +23,7 @@ class MultiHeadAttention(nn.Module):
         value: torch.Tensor,
         mask: torch.Tensor | None = None,
         past_kv: tuple[torch.Tensor, torch.Tensor] | None = None,
+        is_causal: bool = False,
     ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
         B = query.size(0)
 
@@ -38,6 +39,13 @@ class MultiHeadAttention(nn.Module):
             v = torch.cat([past_kv[1], v], dim=2)
 
         dropout_p = self.dropout.p if self.training else 0.0
-        attn_out = F.scaled_dot_product_attention(q, k, v, attn_mask=mask, dropout_p=dropout_p)
+        # is_causal lets SDPA pick the flash-attention kernel; an explicit
+        # attn_mask forces a slower backend (and SDPA forbids passing both).
+        attn_out = F.scaled_dot_product_attention(
+            q, k, v,
+            attn_mask=None if is_causal else mask,
+            dropout_p=dropout_p,
+            is_causal=is_causal,
+        )
         attn_out = attn_out.transpose(1, 2).contiguous().view(B, -1, self.nhead * self.d_k)
         return self.w_o(attn_out), (k, v)

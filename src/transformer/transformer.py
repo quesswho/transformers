@@ -126,14 +126,11 @@ class DecoderOnlyTransformer(nn.Module):
         d_ff: int = 2048,
         dropout: float = 0.1,
         max_len: int = 5000,
-        pad_idx: int = 0,
     ) -> None:
         super().__init__()
-        self.pad_idx = pad_idx
+        self.max_len = max_len
         self.encoder = Encoder(vocab_size, d_model, nhead, num_layers, d_ff, dropout, max_len)
         self.projection = nn.Linear(d_model, vocab_size)
-        causal = torch.tril(torch.ones(max_len, max_len)).bool()
-        self.register_buffer("causal_mask", causal.unsqueeze(0).unsqueeze(0))
         self._init_weights()
 
     def count_parameters(self) -> dict[str, int]:
@@ -155,12 +152,7 @@ class DecoderOnlyTransformer(nn.Module):
                 nn.init.xavier_uniform_(p)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        T = x.size(1)
-        mask = self.causal_mask[:, :, :T, :T]
-        if self.pad_idx is not None:
-            pad_mask = (x != self.pad_idx).unsqueeze(1).unsqueeze(2)
-            mask = mask & pad_mask
-        hidden, _ = self.encoder(x, mask)
+        hidden, _ = self.encoder(x, is_causal=True)
         return self.projection(hidden)
 
     @torch.inference_mode()
@@ -172,17 +164,11 @@ class DecoderOnlyTransformer(nn.Module):
         eos_idx: int | None = None,
     ) -> torch.Tensor:
         self.eval()
-        max_len = self.causal_mask.size(-1)
         past_key_values = None
         for _ in range(max_new_tokens):
             if past_key_values is None:
-                ctx = idx[:, -max_len:]
-                T = ctx.size(1)
-                mask = self.causal_mask[:, :, :T, :T]
-                if self.pad_idx is not None:
-                    pad_mask = (ctx != self.pad_idx).unsqueeze(1).unsqueeze(2)
-                    mask = mask & pad_mask
-                hidden, past_key_values = self.encoder(ctx, mask)
+                ctx = idx[:, -self.max_len:]
+                hidden, past_key_values = self.encoder(ctx, is_causal=True)
             else:
                 T = past_key_values[0][0].size(2)
                 hidden, past_key_values = self.encoder(idx[:, -1:], src_mask=None, past_key_values=past_key_values, offset=T)

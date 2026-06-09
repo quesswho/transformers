@@ -21,9 +21,10 @@ class EncoderLayer(nn.Module):
         x: torch.Tensor,
         mask: torch.Tensor | None = None,
         past_kv: tuple[torch.Tensor, torch.Tensor] | None = None,
+        is_causal: bool = False,
     ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
         normed = self.norm1(x)
-        attn_out, present_kv = self.self_attn(normed, normed, normed, mask, past_kv)
+        attn_out, present_kv = self.self_attn(normed, normed, normed, mask, past_kv, is_causal)
         x = x + self.dropout(attn_out)
         x = x + self.dropout(self.ff(self.norm2(x)))
         return x, present_kv
@@ -64,11 +65,12 @@ class Encoder(nn.Module):
         src_mask: torch.Tensor | None = None,
         past_key_values: list[tuple[torch.Tensor, torch.Tensor]] | None = None,
         offset: int = 0,
+        is_causal: bool = False,
     ) -> tuple[torch.Tensor, list[tuple[torch.Tensor, torch.Tensor]]]:
         x = self.pos_encoding(self.embedding(src) * math.sqrt(self.d_model), offset=offset)
         present_key_values = []
         for i, layer in enumerate(self.layers):
             past_kv = past_key_values[i] if past_key_values is not None else None
-            x, kv = layer(x, src_mask, past_kv)
+            x, kv = layer(x, src_mask, past_kv, is_causal)
             present_key_values.append(kv)
         return self.norm(x), present_key_values
