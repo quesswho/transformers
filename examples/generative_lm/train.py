@@ -18,7 +18,6 @@ Run from project root:
 import argparse
 import hashlib
 import os
-import random
 import sys
 import tempfile
 import time
@@ -30,7 +29,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
 import torch
 import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
 
 from transformer import DecoderOnlyTransformer, load_model_state_dict
 from tokenizer import SentencePieceBPE
@@ -89,20 +87,21 @@ def _load_tokens(text: str, tokenizer, data_path: str | None) -> np.ndarray:
     return arr
 
 
-class CharDataset(Dataset):
-    def __init__(self, data: np.ndarray, block_size: int) -> None:
-        self.data = data
-        self.block_size = block_size
+def get_batch(
+    data: np.ndarray, block_size: int, batch_size: int, device: torch.device
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Sample a whole batch of random windows with one vectorized gather.
 
-    def __len__(self) -> int:
-        return len(self.data) - self.block_size
-
-    def __getitem__(self, _: int) -> tuple[torch.Tensor, torch.Tensor]:
-        i = random.randint(0, len(self.data) - self.block_size - 1)
-        chunk = self.data[i : i + self.block_size + 1]
-        x = torch.tensor(chunk[:-1], dtype=torch.long)
-        y = torch.tensor(chunk[1:], dtype=torch.long)
-        return x, y
+    Avoids the per-sample Python overhead of Dataset/DataLoader (64 __getitem__
+    calls + collate per step). Works on the mmap'd token cache as well.
+    """
+    ix = np.random.randint(0, len(data) - block_size, size=batch_size)
+    batch = torch.from_numpy(data[ix[:, None] + np.arange(block_size + 1)].astype(np.int64))
+    x, y = batch[:, :-1], batch[:, 1:]
+    if device.type == "cuda":
+        # Pinned staging buffers let the H2D copy overlap with GPU compute.
+        return x.pin_memory().to(device, non_blocking=True), y.pin_memory().to(device, non_blocking=True)
+    return x, y
 
 
 
@@ -177,10 +176,8 @@ def main() -> None:
     vocab_size = tokenizer.vocab_size
 
     split = int(0.9 * len(data))
-    train_dataset = CharDataset(data[:split], args.block_size)
-    val_dataset = CharDataset(data[split:], args.block_size)
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=False, drop_last=True)
-    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, drop_last=True)
+    train_data = data[:split]
+    val_data = data[split:]
 
     print(f"Vocab size: {vocab_size}  |  Train tokens: {split:,}  |  Val tokens: {len(data) - split:,}\n")
 
@@ -232,7 +229,6 @@ def main() -> None:
         model = torch.compile(model)
 
     step = start_step - 1
-    train_iter = iter(train_loader)
 
     # Speed measurement: GPU work is async, so the clock is only read after a
     # synchronize. The first window (warmup: cuDNN autotune, allocator growth,
@@ -248,13 +244,7 @@ def main() -> None:
 
     for step in range(start_step, args.steps + 1):
         model.train()
-        try:
-            x, y = next(train_iter)
-        except StopIteration:
-            train_iter = iter(train_loader)
-            x, y = next(train_iter)
-
-        x, y = x.to(device), y.to(device)
+        x, y = get_batch(train_data, args.block_size, args.batch_size, device)
         with torch.autocast("cuda", dtype=torch.bfloat16, enabled=use_amp):
             logits = model(x)
             loss = criterion(logits.view(-1, vocab_size), y.view(-1))
@@ -285,14 +275,12 @@ def main() -> None:
             model.eval()
             val_losses = []
             with torch.no_grad():
-                for vx, vy in val_loader:
-                    vx, vy = vx.to(device), vy.to(device)
+                for _ in range(20):
+                    vx, vy = get_batch(val_data, args.block_size, args.batch_size, device)
                     with torch.autocast("cuda", dtype=torch.bfloat16, enabled=use_amp):
                         vlogits = model(vx)
                         vloss = criterion(vlogits.view(-1, vocab_size), vy.view(-1))
                     val_losses.append(vloss.item())
-                    if len(val_losses) >= 20:
-                        break
             val_loss = sum(val_losses) / len(val_losses)
             print(f"Step {step:5d}/{args.steps}  train={loss.item():.4f}  val={val_loss:.4f}")
             if args.checkpoint_dir is not None:
