@@ -30,13 +30,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 import torch
 import torch.nn as nn
 
-from transformer import DecoderOnlyTransformer, load_model_state_dict
+from transformer import DecoderOnlyTransformer, ModelConfig
 from tokenizer import SentencePieceBPE
 
 DATA_URL = "https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt"
 
 
-def save_checkpoint(path, model, optimizer, step, tokenizer, config):
+def save_checkpoint(path, model, optimizer, step, tokenizer, config: ModelConfig):
     # torch.compile wraps the model and prefixes state_dict keys with
     # "_orig_mod."; save the underlying module so checkpoints load into an
     # uncompiled model.
@@ -46,7 +46,7 @@ def save_checkpoint(path, model, optimizer, step, tokenizer, config):
         "optimizer_state_dict": optimizer.state_dict(),
         "step": step,
         "tokenizer": tokenizer.to_dict(),
-        "config": config,
+        "config": config.to_dict(),
     }, path)
 
 
@@ -185,15 +185,30 @@ def main() -> None:
 
     print(f"Vocab size: {vocab_size}  |  Train tokens: {split:,}  |  Val tokens: {len(data) - split:,}\n")
 
-    model = DecoderOnlyTransformer(
-        vocab_size=vocab_size,
-        d_model=args.d_model,
-        nhead=args.nhead,
-        num_layers=args.num_layers,
-        d_ff=args.d_ff,
-        dropout=args.dropout,
-        max_len=args.block_size,
-    ).to(device)
+    ckpt = None
+    if args.resume:
+        # The checkpoint's config is the source of truth for the architecture;
+        # CLI model arguments are ignored when resuming.
+        ckpt = torch.load(args.resume, map_location=device, weights_only=False)
+        config = ModelConfig.from_dict(ckpt["config"])
+        if config.vocab_size != vocab_size:
+            sys.exit(
+                f"Error: checkpoint was trained with vocab_size={config.vocab_size} "
+                f"but the current tokenizer has vocab_size={vocab_size}."
+            )
+    else:
+        config = ModelConfig(
+            vocab_size=vocab_size,
+            d_model=args.d_model,
+            nhead=args.nhead,
+            num_layers=args.num_layers,
+            d_ff=args.d_ff,
+            dropout=args.dropout,
+            max_len=args.block_size,
+        )
+    block_size = config.max_len
+
+    model = DecoderOnlyTransformer(config).to(device)
 
     counts = model.count_parameters()
     total = sum(counts.values())
@@ -202,24 +217,13 @@ def main() -> None:
         print(f"  {name:<23} {val:>12,}  {val/total*100:>5.1f}%")
     print(f"  {'TOTAL':<23} {total:>12,}\n")
 
-    config = {
-        "vocab_size": vocab_size,
-        "d_model": args.d_model,
-        "nhead": args.nhead,
-        "num_layers": args.num_layers,
-        "d_ff": args.d_ff,
-        "dropout": args.dropout,
-        "block_size": args.block_size,
-    }
-
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.1, fused=True)
     criterion = nn.CrossEntropyLoss()
 
     start_step = 1
     best_val_loss = float("inf")
-    if args.resume:
-        ckpt = torch.load(args.resume, map_location=device)
-        load_model_state_dict(model, ckpt["model_state_dict"])
+    if ckpt is not None:
+        model.load_state_dict(ckpt["model_state_dict"])
         if "optimizer_state_dict" in ckpt:
             try:
                 optimizer.load_state_dict(ckpt["optimizer_state_dict"])
@@ -248,7 +252,7 @@ def main() -> None:
 
     for step in range(start_step, args.steps + 1):
         model.train()
-        x, y = get_batch(train_data, args.block_size, args.batch_size, device)
+        x, y = get_batch(train_data, block_size, args.batch_size, device)
         with torch.autocast("cuda", dtype=torch.bfloat16, enabled=use_amp):
             logits = model(x)
             loss = criterion(logits.view(-1, vocab_size), y.view(-1))
@@ -280,7 +284,7 @@ def main() -> None:
             val_losses = []
             with torch.no_grad():
                 for _ in range(20):
-                    vx, vy = get_batch(val_data, args.block_size, args.batch_size, device)
+                    vx, vy = get_batch(val_data, block_size, args.batch_size, device)
                     with torch.autocast("cuda", dtype=torch.bfloat16, enabled=use_amp):
                         vlogits = model(vx)
                         vloss = criterion(vlogits.view(-1, vocab_size), vy.view(-1))

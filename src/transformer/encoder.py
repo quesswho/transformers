@@ -2,19 +2,18 @@ import math
 import torch
 import torch.nn as nn
 from .attention import MultiHeadAttention
+from .config import ModelConfig
 from .layers import FeedForward, PositionalEncoding, RMSNorm
 
 
 class EncoderLayer(nn.Module):
-    def __init__(
-        self, d_model: int = 512, nhead: int = 8, d_ff: int = 2048, dropout: float = 0.1
-    ) -> None:
+    def __init__(self, config: ModelConfig) -> None:
         super().__init__()
-        self.self_attn = MultiHeadAttention(d_model, nhead, dropout)
-        self.ff = FeedForward(d_model, d_ff, dropout)
-        self.norm1 = RMSNorm(d_model)
-        self.norm2 = RMSNorm(d_model)
-        self.dropout = nn.Dropout(dropout)
+        self.self_attn = MultiHeadAttention(config.d_model, config.nhead, config.dropout)
+        self.ff = FeedForward(config.d_model, config.d_ff, config.dropout)
+        self.norm1 = RMSNorm(config.d_model)
+        self.norm2 = RMSNorm(config.d_model)
+        self.dropout = nn.Dropout(config.dropout)
 
     def forward(
         self,
@@ -31,24 +30,15 @@ class EncoderLayer(nn.Module):
 
 
 class Encoder(nn.Module):
-    def __init__(
-        self,
-        vocab_size: int,
-        d_model: int = 512,
-        nhead: int = 8,
-        num_layers: int = 6,
-        d_ff: int = 2048,
-        dropout: float = 0.1,
-        max_len: int = 5000,
-    ) -> None:
+    def __init__(self, config: ModelConfig) -> None:
         super().__init__()
-        self.embedding = nn.Embedding(vocab_size, d_model)
-        self.pos_encoding = PositionalEncoding(d_model, dropout, max_len)
+        self.embedding = nn.Embedding(config.vocab_size, config.d_model)
+        self.pos_encoding = PositionalEncoding(config.d_model, config.dropout, config.max_len)
         self.layers = nn.ModuleList(
-            [EncoderLayer(d_model, nhead, d_ff, dropout) for _ in range(num_layers)]
+            [EncoderLayer(config) for _ in range(config.num_layers)]
         )
-        self.norm = RMSNorm(d_model)
-        self.d_model = d_model
+        self.norm = RMSNorm(config.d_model)
+        self.d_model = config.d_model
 
     def count_parameters(self) -> dict[str, int]:
         def n(m): return sum(p.numel() for p in m.parameters())

@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 import torch
 import torch.nn as nn
 
-from transformer import EncoderDecoderTransformer
+from transformer import EncoderDecoderConfig, EncoderDecoderTransformer
 
 PAD_IDX = 0
 SOS_IDX = 1
@@ -43,7 +43,7 @@ def train() -> None:
     SEQ_LEN = 8
     EPOCHS = 1000
 
-    model = EncoderDecoderTransformer(
+    model = EncoderDecoderTransformer(EncoderDecoderConfig(
         src_vocab_size=VOCAB_SIZE,
         tgt_vocab_size=VOCAB_SIZE,
         d_model=128,
@@ -53,7 +53,7 @@ def train() -> None:
         dropout=0.1,
         max_len=50,
         pad_idx=PAD_IDX,
-    ).to(device)
+    )).to(device)
 
     counts = model.count_parameters()
     total = sum(counts.values())

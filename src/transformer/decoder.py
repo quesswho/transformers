@@ -2,21 +2,20 @@ import math
 import torch
 import torch.nn as nn
 from .attention import MultiHeadAttention
+from .config import ModelConfig
 from .layers import FeedForward, PositionalEncoding, RMSNorm
 
 
 class DecoderLayer(nn.Module):
-    def __init__(
-        self, d_model: int = 512, nhead: int = 8, d_ff: int = 2048, dropout: float = 0.1
-    ) -> None:
+    def __init__(self, config: ModelConfig) -> None:
         super().__init__()
-        self.self_attn = MultiHeadAttention(d_model, nhead, dropout)
-        self.cross_attn = MultiHeadAttention(d_model, nhead, dropout)
-        self.ff = FeedForward(d_model, d_ff, dropout)
-        self.norm1 = RMSNorm(d_model)
-        self.norm2 = RMSNorm(d_model)
-        self.norm3 = RMSNorm(d_model)
-        self.dropout = nn.Dropout(dropout)
+        self.self_attn = MultiHeadAttention(config.d_model, config.nhead, config.dropout)
+        self.cross_attn = MultiHeadAttention(config.d_model, config.nhead, config.dropout)
+        self.ff = FeedForward(config.d_model, config.d_ff, config.dropout)
+        self.norm1 = RMSNorm(config.d_model)
+        self.norm2 = RMSNorm(config.d_model)
+        self.norm3 = RMSNorm(config.d_model)
+        self.dropout = nn.Dropout(config.dropout)
 
     def forward(
         self,
@@ -37,24 +36,15 @@ class DecoderLayer(nn.Module):
 
 
 class Decoder(nn.Module):
-    def __init__(
-        self,
-        vocab_size: int,
-        d_model: int = 512,
-        nhead: int = 8,
-        num_layers: int = 6,
-        d_ff: int = 2048,
-        dropout: float = 0.1,
-        max_len: int = 5000,
-    ) -> None:
+    def __init__(self, config: ModelConfig) -> None:
         super().__init__()
-        self.embedding = nn.Embedding(vocab_size, d_model)
-        self.pos_encoding = PositionalEncoding(d_model, dropout, max_len)
+        self.embedding = nn.Embedding(config.vocab_size, config.d_model)
+        self.pos_encoding = PositionalEncoding(config.d_model, config.dropout, config.max_len)
         self.layers = nn.ModuleList(
-            [DecoderLayer(d_model, nhead, d_ff, dropout) for _ in range(num_layers)]
+            [DecoderLayer(config) for _ in range(config.num_layers)]
         )
-        self.norm = RMSNorm(d_model)
-        self.d_model = d_model
+        self.norm = RMSNorm(config.d_model)
+        self.d_model = config.d_model
 
     def forward(
         self,

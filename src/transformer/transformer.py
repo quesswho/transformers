@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+from .config import EncoderDecoderConfig, ModelConfig
 from .encoder import Encoder
 from .decoder import Decoder
 
@@ -28,37 +29,14 @@ def _init_weights(model: nn.Module) -> None:
             nn.init.xavier_uniform_(p)
 
 
-def load_model_state_dict(model: nn.Module, state_dict: dict) -> None:
-    # TODO: Remove this in the future once all checkpoints have been saved without the "_orig_mod." prefix.
-    # Checkpoints saved from a torch.compile'd model prefix every key with
-    # "_orig_mod.".
-    state_dict = {k.removeprefix("_orig_mod."): v for k, v in state_dict.items()}
-    incompatible = model.load_state_dict(state_dict, strict=False)
-    if incompatible.missing_keys:
-        raise RuntimeError(
-            f"Missing key(s) in state_dict (model weights not restored): "
-            f"{incompatible.missing_keys}"
-        )
-
-
 class EncoderDecoderTransformer(nn.Module):
-    def __init__(
-        self,
-        src_vocab_size: int,
-        tgt_vocab_size: int,
-        d_model: int = 512,
-        nhead: int = 8,
-        num_layers: int = 6,
-        d_ff: int = 2048,
-        dropout: float = 0.1,
-        max_len: int = 5000,
-        pad_idx: int = 0,
-    ) -> None:
+    def __init__(self, config: EncoderDecoderConfig) -> None:
         super().__init__()
-        self.pad_idx = pad_idx
-        self.encoder = Encoder(src_vocab_size, d_model, nhead, num_layers, d_ff, dropout, max_len)
-        self.decoder = Decoder(tgt_vocab_size, d_model, nhead, num_layers, d_ff, dropout, max_len)
-        self.projection = nn.Linear(d_model, tgt_vocab_size)
+        self.config = config
+        self.pad_idx = config.pad_idx
+        self.encoder = Encoder(config.encoder_config())
+        self.decoder = Decoder(config.decoder_config())
+        self.projection = nn.Linear(config.d_model, config.tgt_vocab_size)
         _init_weights(self)
 
     def count_parameters(self) -> dict[str, int]:
@@ -129,21 +107,27 @@ class EncoderDecoderTransformer(nn.Module):
 
 
 class DecoderOnlyTransformer(nn.Module):
-    def __init__(
-        self,
-        vocab_size: int,
-        d_model: int = 512,
-        nhead: int = 8,
-        num_layers: int = 6,
-        d_ff: int = 2048,
-        dropout: float = 0.1,
-        max_len: int = 5000,
-    ) -> None:
+    def __init__(self, config: ModelConfig) -> None:
         super().__init__()
-        self.max_len = max_len
-        self.encoder = Encoder(vocab_size, d_model, nhead, num_layers, d_ff, dropout, max_len)
-        self.projection = nn.Linear(d_model, vocab_size)
+        self.config = config
+        self.max_len = config.max_len
+        self.encoder = Encoder(config)
+        self.projection = nn.Linear(config.d_model, config.vocab_size)
         _init_weights(self)
+
+    @classmethod
+    def from_checkpoint(
+        cls, path: str, map_location=None
+    ) -> tuple["DecoderOnlyTransformer", dict]:
+        """Rebuild a model from a checkpoint saved by the training scripts.
+
+        Returns the model and the raw checkpoint dict so callers can restore
+        the tokenizer, optimizer state, and step counter.
+        """
+        checkpoint = torch.load(path, map_location=map_location, weights_only=False)
+        model = cls(ModelConfig.from_dict(checkpoint["config"]))
+        model.load_state_dict(checkpoint["model_state_dict"])
+        return model, checkpoint
 
     def count_parameters(self) -> dict[str, int]:
         def n(m): return sum(p.numel() for p in m.parameters())

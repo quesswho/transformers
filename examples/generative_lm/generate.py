@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
 import torch
 
-from transformer import DecoderOnlyTransformer, load_model_state_dict
+from transformer import DecoderOnlyTransformer
 from tokenizer import SentencePieceBPE
 
 
@@ -28,20 +28,9 @@ def main() -> None:
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    checkpoint = torch.load(args.model, map_location=device, weights_only=False)
-    cfg = checkpoint["config"]
+    model, checkpoint = DecoderOnlyTransformer.from_checkpoint(args.model, map_location=device)
+    model = model.to(device)
     tokenizer = SentencePieceBPE.from_dict(checkpoint["tokenizer"])
-
-    model = DecoderOnlyTransformer(
-        vocab_size=cfg["vocab_size"],
-        d_model=cfg["d_model"],
-        nhead=cfg["nhead"],
-        num_layers=cfg["num_layers"],
-        d_ff=cfg["d_ff"],
-        dropout=cfg["dropout"],
-        max_len=cfg["block_size"],
-    ).to(device)
-    load_model_state_dict(model, checkpoint["model_state_dict"])
 
     if args.compile:
         model = torch.compile(model)
