@@ -1,6 +1,7 @@
 import math
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 class RMSNorm(nn.Module):
@@ -10,8 +11,9 @@ class RMSNorm(nn.Module):
         self.weight = nn.Parameter(torch.ones(d_model))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        rms = x.pow(2).mean(-1, keepdim=True).add(self.eps).sqrt()
-        return x / rms * self.weight
+        # Fused kernel: one launch instead of ~5 (pow/mean/add/sqrt/div/mul),
+        # and it computes the statistics in fp32 even under bf16 autocast.
+        return F.rms_norm(x, self.weight.shape, self.weight, self.eps)
 
 
 class FeedForward(nn.Module):

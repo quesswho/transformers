@@ -10,9 +10,10 @@ class MultiHeadAttention(nn.Module):
         assert d_model % nhead == 0, "d_model must be divisible by nhead"
         self.d_k = d_model // nhead
         self.nhead = nhead
-        self.w_q = nn.Linear(d_model, d_model)
-        self.w_k = nn.Linear(d_model, d_model)
-        self.w_v = nn.Linear(d_model, d_model)
+        self.d_model = d_model
+        # Q, K, V projections fused into one matmul: at small d_model the three
+        # separate GEMMs are launch-bound, so one 3x-wide GEMM is ~free.
+        self.w_qkv = nn.Linear(d_model, 3 * d_model)
         self.w_o = nn.Linear(d_model, d_model)
         self.dropout = nn.Dropout(dropout)
 
@@ -26,13 +27,25 @@ class MultiHeadAttention(nn.Module):
         is_causal: bool = False,
     ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
         B = query.size(0)
+        d = self.d_model
+        w, b = self.w_qkv.weight, self.w_qkv.bias
 
-        def project_and_split(linear, x):
-            return linear(x).view(B, -1, self.nhead, self.d_k).transpose(1, 2)
+        if query is key and key is value:
+            q, k, v = self.w_qkv(query).chunk(3, dim=-1)
+        elif key is value:
+            # Cross-attention: query comes from a different sequence, but K and
+            # V still share an input so their projections stay fused.
+            q = F.linear(query, w[:d], b[:d])
+            k, v = F.linear(key, w[d:], b[d:]).chunk(2, dim=-1)
+        else:
+            q = F.linear(query, w[:d], b[:d])
+            k = F.linear(key, w[d : 2 * d], b[d : 2 * d])
+            v = F.linear(value, w[2 * d :], b[2 * d :])
 
-        q = project_and_split(self.w_q, query)
-        k = project_and_split(self.w_k, key)
-        v = project_and_split(self.w_v, value)
+        def split_heads(x):
+            return x.view(B, -1, self.nhead, self.d_k).transpose(1, 2)
+
+        q, k, v = split_heads(q), split_heads(k), split_heads(v)
 
         if past_kv is not None:
             k = torch.cat([past_kv[0], k], dim=2)

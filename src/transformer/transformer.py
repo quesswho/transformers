@@ -15,6 +15,19 @@ def make_tgt_mask(tgt: torch.Tensor, pad_idx: int = 0) -> torch.Tensor:
     return causal & padding
 
 
+def _init_weights(model: nn.Module) -> None:
+    for name, p in model.named_parameters():
+        if p.dim() <= 1:
+            continue
+        if name.endswith("w_qkv.weight"):
+            # Xavier each projection at its own (d_model, d_model) fan, not the
+            # fused (3*d_model, d_model) shape, which would shrink the scale.
+            for chunk in p.data.chunk(3, dim=0):
+                nn.init.xavier_uniform_(chunk)
+        else:
+            nn.init.xavier_uniform_(p)
+
+
 def load_model_state_dict(model: nn.Module, state_dict: dict) -> None:
     incompatible = model.load_state_dict(state_dict, strict=False)
     if incompatible.missing_keys:
@@ -42,7 +55,7 @@ class EncoderDecoderTransformer(nn.Module):
         self.encoder = Encoder(src_vocab_size, d_model, nhead, num_layers, d_ff, dropout, max_len)
         self.decoder = Decoder(tgt_vocab_size, d_model, nhead, num_layers, d_ff, dropout, max_len)
         self.projection = nn.Linear(d_model, tgt_vocab_size)
-        self._init_weights()
+        _init_weights(self)
 
     def count_parameters(self) -> dict[str, int]:
         def n(m): return sum(p.numel() for p in m.parameters())
@@ -63,11 +76,6 @@ class EncoderDecoderTransformer(nn.Module):
             "decoder_norms":      dec_norms,
             "projection":         n(self.projection),
         }
-
-    def _init_weights(self) -> None:
-        for p in self.parameters():
-            if p.dim() > 1:
-                nn.init.xavier_uniform_(p)
 
     def encode(self, src: torch.Tensor, src_mask: torch.Tensor) -> torch.Tensor:
         enc_output, _ = self.encoder(src, src_mask)
@@ -131,7 +139,7 @@ class DecoderOnlyTransformer(nn.Module):
         self.max_len = max_len
         self.encoder = Encoder(vocab_size, d_model, nhead, num_layers, d_ff, dropout, max_len)
         self.projection = nn.Linear(d_model, vocab_size)
-        self._init_weights()
+        _init_weights(self)
 
     def count_parameters(self) -> dict[str, int]:
         def n(m): return sum(p.numel() for p in m.parameters())
@@ -145,11 +153,6 @@ class DecoderOnlyTransformer(nn.Module):
             "norms":      norms,
             "projection": n(self.projection),
         }
-
-    def _init_weights(self) -> None:
-        for p in self.parameters():
-            if p.dim() > 1:
-                nn.init.xavier_uniform_(p)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         hidden, _ = self.encoder(x, is_causal=True)
