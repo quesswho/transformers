@@ -27,11 +27,12 @@ class DecoderLayer(nn.Module):
         past_kv: tuple[torch.Tensor, torch.Tensor] | None = None,
     ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
         # We use Pre-norm as it produces more stable training
-        self_out, present_kv = self.self_attn(x, x, x, tgt_mask, past_kv)
-        x = x + self.norm1(self.dropout(self_out))
-        cross_out, _ = self.cross_attn(x, enc_output, enc_output, src_mask)
-        x = x + self.norm2(self.dropout(cross_out))
-        x = x + self.norm3(self.dropout(self.ff(x)))
+        normed = self.norm1(x)
+        self_out, present_kv = self.self_attn(normed, normed, normed, tgt_mask, past_kv)
+        x = x + self.dropout(self_out)
+        cross_out, _ = self.cross_attn(self.norm2(x), enc_output, enc_output, src_mask)
+        x = x + self.dropout(cross_out)
+        x = x + self.dropout(self.ff(self.norm3(x)))
         return x, present_kv
 
 
