@@ -1,7 +1,7 @@
 from .attention import MultiHeadAttention
 from .config import ModelConfig, EncoderDecoderConfig
 from .layers import FeedForward, PositionalEncoding, RMSNorm
-from .encoder import EncoderLayer, Encoder
+from .stack import TransformerBlock, TransformerStack
 from .decoder import DecoderLayer, Decoder
 from .transformer import EncoderDecoderTransformer, DecoderOnlyTransformer, make_src_mask, make_tgt_mask
 
@@ -12,8 +12,8 @@ __all__ = [
     "FeedForward",
     "PositionalEncoding",
     "RMSNorm",
-    "EncoderLayer",
-    "Encoder",
+    "TransformerBlock",
+    "TransformerStack",
     "DecoderLayer",
     "Decoder",
     "EncoderDecoderTransformer",

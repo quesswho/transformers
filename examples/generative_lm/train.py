@@ -1,7 +1,7 @@
 """
 Generative language model trainer.
 
-Uses the Encoder stack as a decoder-only transformer (GPT-style):
+Uses the TransformerStack as a decoder-only transformer (GPT-style):
 a causal mask turns bidirectional self-attention into autoregressive generation.
 
 Run from project root:

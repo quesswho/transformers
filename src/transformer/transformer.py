@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from .config import EncoderDecoderConfig, ModelConfig
-from .encoder import Encoder
+from .stack import TransformerStack
 from .decoder import Decoder
 
 
@@ -34,7 +34,7 @@ class EncoderDecoderTransformer(nn.Module):
         super().__init__()
         self.config = config
         self.pad_idx = config.pad_idx
-        self.encoder = Encoder(config.encoder_config())
+        self.encoder = TransformerStack(config.encoder_config())
         self.decoder = Decoder(config.decoder_config())
         self.projection = nn.Linear(config.d_model, config.tgt_vocab_size)
         _init_weights(self)
@@ -111,7 +111,7 @@ class DecoderOnlyTransformer(nn.Module):
         super().__init__()
         self.config = config
         self.max_len = config.max_len
-        self.encoder = Encoder(config)
+        self.stack = TransformerStack(config)
         self.projection = nn.Linear(config.d_model, config.vocab_size)
         _init_weights(self)
 
@@ -131,19 +131,19 @@ class DecoderOnlyTransformer(nn.Module):
 
     def count_parameters(self) -> dict[str, int]:
         def n(m): return sum(p.numel() for p in m.parameters())
-        norms = n(self.encoder.norm) + sum(
-            n(l.norm1) + n(l.norm2) for l in self.encoder.layers
+        norms = n(self.stack.norm) + sum(
+            n(l.norm1) + n(l.norm2) for l in self.stack.layers
         )
         return {
-            "embeddings": n(self.encoder.embedding),
-            "attention":  sum(n(l.self_attn) for l in self.encoder.layers),
-            "ffn":        sum(n(l.ff) for l in self.encoder.layers),
+            "embeddings": n(self.stack.embedding),
+            "attention":  sum(n(l.self_attn) for l in self.stack.layers),
+            "ffn":        sum(n(l.ff) for l in self.stack.layers),
             "norms":      norms,
             "projection": n(self.projection),
         }
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        hidden, _ = self.encoder(x, is_causal=True)
+        hidden, _ = self.stack(x, is_causal=True)
         return self.projection(hidden)
 
     @torch.inference_mode()
@@ -159,10 +159,10 @@ class DecoderOnlyTransformer(nn.Module):
         for _ in range(max_new_tokens):
             if past_key_values is None:
                 ctx = idx[:, -self.max_len:]
-                hidden, past_key_values = self.encoder(ctx, is_causal=True)
+                hidden, past_key_values = self.stack(ctx, is_causal=True)
             else:
                 T = past_key_values[0][0].size(2)
-                hidden, past_key_values = self.encoder(idx[:, -1:], src_mask=None, past_key_values=past_key_values, offset=T)
+                hidden, past_key_values = self.stack(idx[:, -1:], past_key_values=past_key_values, offset=T)
             logits = self.projection(hidden)[:, -1, :]
             if temperature == 1.0:
                 next_tok = logits.argmax(dim=-1, keepdim=True)

@@ -6,7 +6,11 @@ from .config import ModelConfig
 from .layers import FeedForward, PositionalEncoding, RMSNorm
 
 
-class EncoderLayer(nn.Module):
+class TransformerBlock(nn.Module):
+    """Pre-norm self-attention + feed-forward block. Bidirectional or causal
+    depending on the is_causal flag, so it serves both the encoder and
+    decoder-only paths."""
+
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
         self.self_attn = MultiHeadAttention(config.d_model, config.nhead, config.dropout)
@@ -29,13 +33,17 @@ class EncoderLayer(nn.Module):
         return x, present_kv
 
 
-class Encoder(nn.Module):
+class TransformerStack(nn.Module):
+    """Embedding + N TransformerBlocks + final norm. With is_causal=False this
+    is the classic encoder; with is_causal=True it is a GPT-style decoder-only
+    stack."""
+
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
         self.embedding = nn.Embedding(config.vocab_size, config.d_model)
         self.pos_encoding = PositionalEncoding(config.d_model, config.dropout, config.max_len)
         self.layers = nn.ModuleList(
-            [EncoderLayer(config) for _ in range(config.num_layers)]
+            [TransformerBlock(config) for _ in range(config.num_layers)]
         )
         self.norm = RMSNorm(config.d_model)
         self.d_model = config.d_model
@@ -51,16 +59,16 @@ class Encoder(nn.Module):
 
     def forward(
         self,
-        src: torch.Tensor,
-        src_mask: torch.Tensor | None = None,
+        tokens: torch.Tensor,
+        mask: torch.Tensor | None = None,
         past_key_values: list[tuple[torch.Tensor, torch.Tensor]] | None = None,
         offset: int = 0,
         is_causal: bool = False,
     ) -> tuple[torch.Tensor, list[tuple[torch.Tensor, torch.Tensor]]]:
-        x = self.pos_encoding(self.embedding(src) * math.sqrt(self.d_model), offset=offset)
+        x = self.pos_encoding(self.embedding(tokens) * math.sqrt(self.d_model), offset=offset)
         present_key_values = []
         for i, layer in enumerate(self.layers):
             past_kv = past_key_values[i] if past_key_values is not None else None
-            x, kv = layer(x, src_mask, past_kv, is_causal)
+            x, kv = layer(x, mask, past_kv, is_causal)
             present_key_values.append(kv)
         return self.norm(x), present_key_values

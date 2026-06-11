@@ -1,10 +1,12 @@
 # Transformers
-00
-Transformer implementations in PyTorch for educational purposes.
+
+Pytorch implementation of decoder transformers
 
 Includes a next token predictor in examples/generative_lm
 
 ## Build
+
+The following is subject to change:
 
 The BPE tokenizer has a C++ core (pybind11 extension) that must be compiled before use.
 
@@ -19,27 +21,21 @@ Replace `.venv\Scripts\python.exe` with the path to your Python 3.12 interpreter
 
 ## Training data
 
-**Quick start — tinyshakespeare (automatic)**
-
-Omit `--data` and the trainer downloads the dataset automatically. Good for smoke-testing.
-
-**Larger corpus — Project Gutenberg**
+**Dataset creation**
+A dataset can be constructed from books through the following command
 
 ```
 python examples/gutenberg_download/download.py --target-mb 200 --output data/corpus.txt
 ```
 
-The default target is 500 MB. Use `--delay` to adjust the pause between requests (default 1 s).
+Use `--delay` to adjust the pause between requests (default 1 s).
+Quality polishing:
+The program drops similar texts and documents with a high percentage of non alphabetic letters.
+There is also a preprocess to remove repeated characters such as `\t` and `\n`, and cleaning up HTML tags.
 
 ## Training
 
-Minimal run (tinyshakespeare downloaded automatically):
-
-```
-python examples/generative_lm/train.py --output model.pt
-```
-
-Full example with a custom corpus:
+Example with a custom corpus:
 
 ```
 python examples/generative_lm/train.py \
