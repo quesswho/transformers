@@ -29,6 +29,10 @@ def _init_weights(model: nn.Module) -> None:
 
 
 def load_model_state_dict(model: nn.Module, state_dict: dict) -> None:
+    # TODO: Remove this in the future once all checkpoints have been saved without the "_orig_mod." prefix.
+    # Checkpoints saved from a torch.compile'd model prefix every key with
+    # "_orig_mod.".
+    state_dict = {k.removeprefix("_orig_mod."): v for k, v in state_dict.items()}
     incompatible = model.load_state_dict(state_dict, strict=False)
     if incompatible.missing_keys:
         raise RuntimeError(

@@ -37,6 +37,10 @@ DATA_URL = "https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tiny
 
 
 def save_checkpoint(path, model, optimizer, step, tokenizer, config):
+    # torch.compile wraps the model and prefixes state_dict keys with
+    # "_orig_mod."; save the underlying module so checkpoints load into an
+    # uncompiled model.
+    model = getattr(model, "_orig_mod", model)
     torch.save({
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
