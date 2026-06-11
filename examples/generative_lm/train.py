@@ -208,7 +208,7 @@ def main() -> None:
         "block_size": args.block_size,
     }
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.1)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.1, fused=True)
     criterion = nn.CrossEntropyLoss()
 
     start_step = 1
@@ -226,7 +226,7 @@ def main() -> None:
         print(f"Resumed from {args.resume} at step {start_step}\n")
 
     if args.compile:
-        model = torch.compile(model)
+        model = torch.compile(model, mode="reduce-overhead")
 
     step = start_step - 1
 
