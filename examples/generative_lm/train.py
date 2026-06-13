@@ -11,6 +11,9 @@ Run from project root:
     python examples/generative_lm/train.py --data mytext.txt --save-tokenizer tok.json --vocab-size 2000
     Load a tokenizer
     python examples/generative_lm/train.py --data mytext.txt --tokenizer tok.json
+
+    build babylm_strict_small model
+    python examples/generative_lm/train.py --output models/sslm7M.pt --checkpoint-dir models/chk --data data/babylm_strict_small.txt --save-tokenizer data/vocab/ssbby10k.json --vocab-size 10000 --steps 10000
 """
 
 import argparse
@@ -43,6 +46,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--data", required=True, help="Path to a .txt training file")
     parser.add_argument("--output", default="model.pt", help="Path to save the checkpoint (default: model.pt)")
     parser.add_argument("--steps", type=int, default=5000, help="Max training steps (default: 5000)")
+    parser.add_argument("--max-epochs", type=int, default=None, help="Stop after this many epochs (one full pass over the training tokens). Caps --steps when set (default: disabled)")
     parser.add_argument("--batch-size", type=int, default=64, help="Batch size (default: 64)")
     parser.add_argument("--block-size", type=int, default=256, help="Context window length (default: 256)")
     parser.add_argument("--d-model", type=int, default=256, help="Model embedding dimension (default: 256)")
@@ -180,6 +184,17 @@ def main() -> None:
         )
     block_size = config.max_seq_len
 
+    # Training samples random batches, so an "epoch" is defined as having seen
+    # roughly as many tokens as the training set holds. --max-epochs caps the
+    # step count accordingly; --steps remains the upper bound.
+    total_steps = args.steps
+    if args.max_epochs is not None:
+        steps_per_epoch = max(1, len(train_data) // (args.batch_size * block_size))
+        epoch_limit = args.max_epochs * steps_per_epoch
+        total_steps = min(args.steps, epoch_limit)
+        print(f"Epoch limit: {args.max_epochs} epochs × {steps_per_epoch:,} steps/epoch "
+              f"= {epoch_limit:,} steps  →  training for {total_steps:,} steps\n")
+
     model = DecoderOnlyTransformer(config).to(device)
     print_param_table(model.count_parameters())
 
@@ -195,10 +210,10 @@ def main() -> None:
     # Warmup + cosine-decay LR schedule. The curve is a pure function of the
     # step and args.steps, so on resume we just fast-forward it to start_step
     # rather than persisting scheduler state (also robust if --steps changes).
-    warmup_steps = max(1, int(args.warmup_frac * args.steps))
+    warmup_steps = max(1, int(args.warmup_frac * total_steps))
     scheduler = torch.optim.lr_scheduler.LambdaLR(
         optimizer,
-        lambda s: cosine_lr(s, args.steps, warmup_steps, args.min_lr_ratio),
+        lambda s: cosine_lr(s, total_steps, warmup_steps, args.min_lr_ratio),
     )
     for _ in range(start_step - 1):
         scheduler.step()
@@ -213,7 +228,7 @@ def main() -> None:
     prefetcher = Prefetcher(train_data, block_size, args.batch_size, device) if device.type == "cuda" else None
     meter = ThroughputMeter(device)
 
-    for step in range(start_step, args.steps + 1):
+    for step in range(start_step, total_steps + 1):
         model.train()
         x, y = prefetcher.next() if prefetcher is not None else get_batch(train_data, block_size, args.batch_size, device)
         with torch.autocast("cuda", dtype=torch.bfloat16, enabled=use_amp):
@@ -230,13 +245,13 @@ def main() -> None:
         if step % args.log_interval == 0:
             tok_per_s, ms_per_step, warmup = meter.flush()
             note = "  (warmup, excluded from avg)" if warmup else ""
-            print(f"Step {step:5d}/{args.steps}  train={loss.item():.4f}  "
+            print(f"Step {step:5d}/{total_steps}  train={loss.item():.4f}  "
                   f"lr={scheduler.get_last_lr()[0]:.2e}  "
                   f"{tok_per_s:>10,.0f} tok/s  {ms_per_step:7.1f} ms/step{note}")
 
         if step % args.val_interval == 0:
             val_loss = evaluate(model, val_data, block_size, args.batch_size, criterion, vocab_size, device, use_amp)
-            print(f"Step {step:5d}/{args.steps}  train={loss.item():.4f}  val={val_loss:.4f}")
+            print(f"Step {step:5d}/{total_steps}  train={loss.item():.4f}  val={val_loss:.4f}")
             if args.checkpoint_dir is not None:
                 os.makedirs(args.checkpoint_dir, exist_ok=True)
                 save_checkpoint(os.path.join(args.checkpoint_dir, "latest.pt"), model, optimizer, step, tokenizer, config)

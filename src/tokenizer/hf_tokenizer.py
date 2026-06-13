@@ -88,6 +88,16 @@ class Tokenizer:
         ids = self._fast.encode(text, add_special_tokens=False)
         return np.asarray(ids, dtype=np.int32)
 
+    def encode_with_offsets(self, text: str) -> tuple[list[int], list[tuple[int, int]]]:
+        """Encode to token ids plus per-token (start, end) character spans.
+
+        The character offsets let log-likelihood scoring isolate the tokens that
+        belong to a sentence's completion (e.g. the EWoK/COMPS target phrase),
+        which is exactly how the official BabyLM zero-shot pipeline locates the
+        scored span. No special tokens are added."""
+        enc = self._fast(text, add_special_tokens=False, return_offsets_mapping=True)
+        return enc["input_ids"], enc["offset_mapping"]
+
     def decode(self, ids) -> str:
         return self._fast.decode(list(ids), skip_special_tokens=True)
 
