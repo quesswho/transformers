@@ -165,9 +165,9 @@ def main() -> None:
             num_layers=args.num_layers,
             d_ff=args.d_ff,
             dropout=args.dropout,
-            max_len=args.block_size,
+            max_seq_len=args.block_size,
         )
-    block_size = config.max_len
+    block_size = config.max_seq_len
 
     model = DecoderOnlyTransformer(config).to(device)
     print_param_table(model.count_parameters())

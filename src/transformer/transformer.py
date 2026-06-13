@@ -116,7 +116,7 @@ class DecoderOnlyTransformer(nn.Module):
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
         self.config = config
-        self.max_len = config.max_len
+        self.max_seq_len = config.max_seq_len
         self.stack = TransformerStack(config)
         self.projection = nn.Linear(config.d_model, config.vocab_size)
         _init_weights(self)
@@ -170,7 +170,7 @@ class DecoderOnlyTransformer(nn.Module):
         past_key_values = None
         for _ in range(max_new_tokens):
             if past_key_values is None:
-                ctx = idx[:, -self.max_len:]
+                ctx = idx[:, -self.max_seq_len:]
                 hidden, past_key_values = self.stack(ctx, is_causal=True)
             else:
                 T = past_key_values[0][0].size(2)

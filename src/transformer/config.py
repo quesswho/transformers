@@ -12,7 +12,7 @@ class ModelConfig:
     num_layers: int = 6
     d_ff: int = 2048
     dropout: float = 0.1
-    max_len: int = 5000
+    max_seq_len: int = 5000  # context-window cap for generation (not a hard architectural limit under RoPE)
     rope_theta: float = 10000.0  # rotary embedding base frequency
     tie_embeddings: bool = True  # share input embedding and output projection weights
 
@@ -33,7 +33,7 @@ class EncoderDecoderConfig:
     num_layers: int = 6
     d_ff: int = 2048
     dropout: float = 0.1
-    max_len: int = 5000
+    max_seq_len: int = 5000  # context-window cap for generation (not a hard architectural limit under RoPE)
     rope_theta: float = 10000.0  # rotary embedding base frequency
     pad_idx: int = 0
     tie_embeddings: bool = False  # tie decoder input embedding and output projection
@@ -46,7 +46,7 @@ class EncoderDecoderConfig:
             num_layers=self.num_layers,
             d_ff=self.d_ff,
             dropout=self.dropout,
-            max_len=self.max_len,
+            max_seq_len=self.max_seq_len,
             rope_theta=self.rope_theta,
         )
 
@@ -58,7 +58,7 @@ class EncoderDecoderConfig:
             num_layers=self.num_layers,
             d_ff=self.d_ff,
             dropout=self.dropout,
-            max_len=self.max_len,
+            max_seq_len=self.max_seq_len,
             rope_theta=self.rope_theta,
             tie_embeddings=self.tie_embeddings,
         )

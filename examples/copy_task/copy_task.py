@@ -52,7 +52,7 @@ def train() -> None:
         num_layers=2,
         d_ff=256,
         dropout=0.1,
-        max_len=50,
+        max_seq_len=50,
         pad_idx=PAD_IDX,
     )).to(device)
 
