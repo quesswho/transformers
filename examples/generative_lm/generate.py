@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 import torch
 
 from transformer import DecoderOnlyTransformer
-from tokenizer import SentencePieceBPE
+from tokenizer import Tokenizer
 
 
 def main() -> None:
@@ -30,17 +30,17 @@ def main() -> None:
 
     model, checkpoint = DecoderOnlyTransformer.from_checkpoint(args.model, map_location=device)
     model = model.to(device)
-    tokenizer = SentencePieceBPE.from_dict(checkpoint["tokenizer"])
+    tokenizer = Tokenizer.from_dict(checkpoint["tokenizer"])
 
     if args.compile:
         model = torch.compile(model)
 
     tokens = tokenizer.encode(args.prompt)
-    if not tokens:
+    if len(tokens) == 0:
         print("Error: prompt encoded to empty token sequence.")
         sys.exit(1)
 
-    ctx = torch.tensor([tokens], dtype=torch.long, device=device)
+    ctx = torch.tensor([tokens.tolist()], dtype=torch.long, device=device)
     out = model.generate(ctx, max_new_tokens=args.steps, temperature=args.temperature)
     print(tokenizer.decode(out[0].tolist()))
 

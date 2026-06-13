@@ -24,7 +24,7 @@ import torch
 import torch.nn as nn
 
 from transformer import DecoderOnlyTransformer, ModelConfig
-from tokenizer import SentencePieceBPE
+from tokenizer import Tokenizer
 from training import (
     Prefetcher,
     ThroughputMeter,
@@ -53,8 +53,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lr", type=float, default=1e-3, help="AdamW peak learning rate (default: 1e-3)")
     parser.add_argument("--warmup-frac", type=float, default=0.03, help="Fraction of total steps spent linearly warming up the LR (default: 0.03)")
     parser.add_argument("--min-lr-ratio", type=float, default=0.1, help="Final LR as a fraction of peak after cosine decay (default: 0.1)")
-    parser.add_argument("--vocab-size", type=int, default=2000, help="SentencePiece vocab size (default: 2000)")
-    parser.add_argument("--tokenizer", default=None, help="Path to a pre-trained tokenizer JSON file; skips BPE training")
+    parser.add_argument("--vocab-size", type=int, default=2000, help="Unigram vocab size (default: 2000)")
+    parser.add_argument("--tokenizer", default=None, help="Path to a pre-trained tokenizer.json file; skips tokenizer training")
     parser.add_argument("--save-tokenizer", default=None, help="Save the tokenizer to this JSON file after training/loading")
     parser.add_argument("--val-interval", type=int, default=500, help="Validate every N steps (default: 500)")
     parser.add_argument("--log-interval", type=int, default=100, help="Log training speed every N steps (default: 100)")
@@ -82,15 +82,14 @@ def cosine_lr(step: int, total_steps: int, warmup_steps: int, min_ratio: float) 
     return min_ratio + (1.0 - min_ratio) * 0.5 * (1.0 + math.cos(math.pi * progress))
 
 
-def build_tokenizer(args: argparse.Namespace, text: str) -> SentencePieceBPE:
+def build_tokenizer(args: argparse.Namespace, text: str) -> Tokenizer:
     if args.tokenizer is not None:
         print(f"Loading tokenizer from {args.tokenizer}...")
-        tokenizer = SentencePieceBPE.load(args.tokenizer)
+        tokenizer = Tokenizer.load(args.tokenizer)
         print(f"Tokenizer loaded. Vocab size: {tokenizer.vocab_size}\n")
     else:
-        tokenizer = SentencePieceBPE()
-        print(f"Training SentencePiece BPE tokenizer (vocab_size={args.vocab_size})...")
-        tokenizer.train(text, vocab_size=args.vocab_size)
+        print(f"Training Unigram tokenizer (vocab_size={args.vocab_size})...")
+        tokenizer = Tokenizer.train(text, vocab_size=args.vocab_size)
         print(f"Tokenizer trained. Vocab size: {tokenizer.vocab_size}\n")
 
     if args.save_tokenizer is not None:

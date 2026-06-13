@@ -4,20 +4,17 @@ Pytorch implementation of decoder transformers
 
 Includes a next token predictor in examples/generative_lm
 
-## Build
+## Setup
 
-The following is subject to change:
-
-The BPE tokenizer has a C++ core (pybind11 extension) that must be compiled before use.
-
-**Requirements:** [Visual Studio Build Tools 2026](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with the "Desktop development with C++" workload, CMake 3.21+, pybind11 (`pip install pybind11>=2.12`).
+Install the dependencies into your Python 3.12 environment:
 
 ```powershell
-cmake -B build -G "Visual Studio 18 2026" -A x64 -DPython3_EXECUTABLE=.venv\Scripts\python.exe
-cmake --build build --config Release
+pip install torch numpy tokenizers transformers
 ```
 
-Replace `.venv\Scripts\python.exe` with the path to your Python 3.12 interpreter if not using a local venv. The compiled `.pyd` is placed in `src/tokenizer/` automatically.
+The tokenizer is a SentencePiece-style Unigram model trained with HuggingFace
+`tokenizers` and wrapped in a `PreTrainedTokenizerFast`, so a trained tokenizer
+loads directly into the BabyLM evaluation harness via `AutoTokenizer.from_pretrained`.
 
 ## Training data
 
@@ -32,6 +29,16 @@ Use `--delay` to adjust the pause between requests (default 1 s).
 Quality polishing:
 The program drops similar texts and documents with a high percentage of non alphabetic letters.
 There is also a preprocess to remove repeated characters such as `\t` and `\n`, and cleaning up HTML tags.
+
+**BabyLM 2026 Strict-Small**
+The official 10M-token [BabyLM 2026 Strict-Small](https://huggingface.co/datasets/BabyLM-community/BabyLM-2026-Strict-Small)
+corpus can be downloaded and concatenated into a single training file with
+
+```
+python examples/babylm_download/download.py --output data/babylm_strict_small.txt
+```
+
+The upstream text is already cleaned and detoxified, so no extra preprocessing is applied.
 
 ## Training
 

@@ -17,8 +17,7 @@ def load_text(path: str) -> str:
 
 
 def _tokenizer_fingerprint(tokenizer) -> str:
-    d = tokenizer.to_dict()
-    raw = str(sorted(d.get("vocab", {}).items())) + str(d.get("merges", []))
+    raw = tokenizer.to_dict()["tokenizer_json"]
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 

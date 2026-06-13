@@ -1,3 +1,3 @@
-from ._sentencepiece_bpe import SentencePieceBPE
+from .hf_tokenizer import Tokenizer
 
-__all__ = ["SentencePieceBPE"]
+__all__ = ["Tokenizer"]
