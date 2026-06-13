@@ -98,14 +98,62 @@ def get_batch(
 
     Avoids the per-sample Python overhead of Dataset/DataLoader (64 __getitem__
     calls + collate per step). Works on the mmap'd token cache as well.
+
+    Tokens are gathered and transferred as int32 (half the bytes of int64) and
+    cast to long on the device, where nn.Embedding and cross-entropy need them.
+    Used for the CPU path and validation; the training loop uses Prefetcher to
+    overlap this work with GPU compute.
     """
     ix = np.random.randint(0, len(data) - block_size, size=batch_size)
-    batch = torch.from_numpy(data[ix[:, None] + np.arange(block_size + 1)].astype(np.int64))
+    batch = torch.from_numpy(data[ix[:, None] + np.arange(block_size + 1)])
     x, y = batch[:, :-1], batch[:, 1:]
     if device.type == "cuda":
-        # Pinned staging buffers let the H2D copy overlap with GPU compute.
-        return x.pin_memory().to(device, non_blocking=True), y.pin_memory().to(device, non_blocking=True)
-    return x, y
+        # Pinned staging buffers let the H2D copy overlap with GPU compute; the
+        # int32 -> int64 widening happens on the GPU after the smaller transfer.
+        x = x.pin_memory().to(device, non_blocking=True).long()
+        y = y.pin_memory().to(device, non_blocking=True).long()
+        return x, y
+    return x.long(), y.long()
+
+
+class Prefetcher:
+    """Overlaps batch preparation with GPU compute.
+
+    While the GPU runs step N, the next batch's CPU gather + H2D copy run on a
+    side stream, hiding the data-path latency that otherwise sits on the
+    critical path before each forward. Tokens move as int32 (half the bytes of
+    int64) and are cast to long on the GPU. PyTorch's caching host/device
+    allocators recycle the pinned and device buffers across steps, so there is
+    no per-step cudaHostAlloc; record_stream keeps that recycling safe.
+    """
+
+    def __init__(
+        self, data: np.ndarray, block_size: int, batch_size: int, device: torch.device
+    ) -> None:
+        self.data = data
+        self.block_size = block_size
+        self.batch_size = batch_size
+        self.device = device
+        self.stream = torch.cuda.Stream()
+        self._preload()
+
+    def _preload(self) -> None:
+        ix = np.random.randint(0, len(self.data) - self.block_size, size=self.batch_size)
+        batch = torch.from_numpy(self.data[ix[:, None] + np.arange(self.block_size + 1)])
+        x, y = batch[:, :-1].pin_memory(), batch[:, 1:].pin_memory()
+        with torch.cuda.stream(self.stream):
+            self.next_x = x.to(self.device, non_blocking=True).long()
+            self.next_y = y.to(self.device, non_blocking=True).long()
+
+    def next(self) -> tuple[torch.Tensor, torch.Tensor]:
+        torch.cuda.current_stream().wait_stream(self.stream)
+        x, y = self.next_x, self.next_y
+        # Mark the buffers as in use on the default stream so the allocator does
+        # not recycle them while the current step is still reading them.
+        x.record_stream(torch.cuda.current_stream())
+        y.record_stream(torch.cuda.current_stream())
+        self._preload()
+        return x, y
 
 
 
@@ -130,7 +178,7 @@ def main() -> None:
     parser.add_argument("--checkpoint-dir", default=None, help="Directory for periodic checkpoints (default: disabled)")
     parser.add_argument("--resume", default=None, help="Path to a checkpoint to resume training from")
     parser.add_argument("--vocab-only", action="store_true", help="Build and save the tokenizer then exit without training")
-    parser.add_argument("--compile", action="store_true", help="torch.compile the model before training (slow first step, faster afterwards)")
+    parser.add_argument("--compile", default=True, action="store_true", help="torch.compile the model before training (slow first step, faster afterwards)")
     args = parser.parse_args()
 
     # We scale the feed-forward dimension
@@ -238,6 +286,10 @@ def main() -> None:
 
     step = start_step - 1
 
+    # On CUDA, overlap the next batch's gather + H2D copy with the current
+    # step's compute. The CPU path falls back to a synchronous get_batch.
+    prefetcher = Prefetcher(train_data, block_size, args.batch_size, device) if device.type == "cuda" else None
+
     # Speed measurement: GPU work is async, so the clock is only read after a
     # synchronize. The first window (warmup: cuDNN autotune, allocator growth,
     # torch.compile) is excluded from the reported average, as is validation.
@@ -252,7 +304,7 @@ def main() -> None:
 
     for step in range(start_step, args.steps + 1):
         model.train()
-        x, y = get_batch(train_data, block_size, args.batch_size, device)
+        x, y = prefetcher.next() if prefetcher is not None else get_batch(train_data, block_size, args.batch_size, device)
         with torch.autocast("cuda", dtype=torch.bfloat16, enabled=use_amp):
             logits = model(x)
             loss = criterion(logits.view(-1, vocab_size), y.view(-1))
