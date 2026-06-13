@@ -6,27 +6,14 @@ to the example rather than living in the model-agnostic src/training package.
 
 import hashlib
 import os
-import tempfile
-import urllib.request
 
 import numpy as np
 
-DATA_URL = "https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt"
 
-
-def load_text(path: str | None) -> str:
-    """Read a UTF-8 text file, or auto-download tinyshakespeare when path is None."""
-    if path is not None:
-        with open(path, "r", encoding="utf-8") as f:
-            return f.read()
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".txt")
-    tmp.close()
-    print("Downloading tinyshakespeare...")
-    urllib.request.urlretrieve(DATA_URL, tmp.name)
-    with open(tmp.name, "r", encoding="utf-8") as f:
-        text = f.read()
-    os.unlink(tmp.name)
-    return text
+def load_text(path: str) -> str:
+    """Read a UTF-8 text file."""
+    with open(path, "r", encoding="utf-8") as f:
+        return f.read()
 
 
 def _tokenizer_fingerprint(tokenizer) -> str:

@@ -5,9 +5,7 @@ Uses the TransformerStack as a decoder-only transformer (GPT-style):
 a causal mask turns bidirectional self-attention into autoregressive generation.
 
 Run from project root:
-    python examples/generative_lm/train.py --data data/shakespeare.txt --output shakespeare_model.pt
     python examples/generative_lm/train.py --data mytext.txt --output model.pt
-    python examples/generative_lm/train.py  # auto-downloads tinyshakespeare
 
     Save a tokenizer
     python examples/generative_lm/train.py --data mytext.txt --save-tokenizer tok.json --vocab-size 2000
@@ -16,6 +14,7 @@ Run from project root:
 """
 
 import argparse
+import math
 import os
 import sys
 
@@ -41,7 +40,7 @@ from data import load_text, load_tokens
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train a generative language model.")
-    parser.add_argument("--data", default=None, help="Path to a .txt training file (default: auto-download tinyshakespeare)")
+    parser.add_argument("--data", required=True, help="Path to a .txt training file")
     parser.add_argument("--output", default="model.pt", help="Path to save the checkpoint (default: model.pt)")
     parser.add_argument("--steps", type=int, default=5000, help="Max training steps (default: 5000)")
     parser.add_argument("--batch-size", type=int, default=64, help="Batch size (default: 64)")
@@ -51,7 +50,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-layers", type=int, default=6, help="Number of transformer layers (default: 8)")
     parser.add_argument("--d-ff", type=int, default=None, help="Feed-forward hidden dimension (default: 8/3 * d_model)")
     parser.add_argument("--dropout", type=float, default=0.1, help="Dropout rate (default: 0.1)")
-    parser.add_argument("--lr", type=float, default=3e-4, help="AdamW learning rate (default: 3e-4)")
+    parser.add_argument("--lr", type=float, default=1e-3, help="AdamW peak learning rate (default: 1e-3)")
+    parser.add_argument("--warmup-frac", type=float, default=0.03, help="Fraction of total steps spent linearly warming up the LR (default: 0.03)")
+    parser.add_argument("--min-lr-ratio", type=float, default=0.1, help="Final LR as a fraction of peak after cosine decay (default: 0.1)")
     parser.add_argument("--vocab-size", type=int, default=2000, help="SentencePiece vocab size (default: 2000)")
     parser.add_argument("--tokenizer", default=None, help="Path to a pre-trained tokenizer JSON file; skips BPE training")
     parser.add_argument("--save-tokenizer", default=None, help="Save the tokenizer to this JSON file after training/loading")
@@ -68,6 +69,17 @@ def parse_args() -> argparse.Namespace:
     if args.d_ff is None:
         args.d_ff = round(8 / 3 * args.d_model)
     return args
+
+
+def cosine_lr(step: int, total_steps: int, warmup_steps: int, min_ratio: float) -> float:
+    """LR multiplier (relative to peak): linear warmup, then cosine decay to
+    min_ratio. Used as the LambdaLR schedule so the constant LR is replaced by a
+    warmup + decay curve."""
+    if step < warmup_steps:
+        return (step + 1) / warmup_steps
+    progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
+    progress = min(progress, 1.0)
+    return min_ratio + (1.0 - min_ratio) * 0.5 * (1.0 + math.cos(math.pi * progress))
 
 
 def build_tokenizer(args: argparse.Namespace, text: str) -> SentencePieceBPE:
@@ -181,6 +193,17 @@ def main() -> None:
         start_step = restore_training_state(model, optimizer, ckpt)
         print(f"Resumed from {args.resume} at step {start_step}\n")
 
+    # Warmup + cosine-decay LR schedule. The curve is a pure function of the
+    # step and args.steps, so on resume we just fast-forward it to start_step
+    # rather than persisting scheduler state (also robust if --steps changes).
+    warmup_steps = max(1, int(args.warmup_frac * args.steps))
+    scheduler = torch.optim.lr_scheduler.LambdaLR(
+        optimizer,
+        lambda s: cosine_lr(s, args.steps, warmup_steps, args.min_lr_ratio),
+    )
+    for _ in range(start_step - 1):
+        scheduler.step()
+
     if args.compile:
         model = torch.compile(model, mode="reduce-overhead")
 
@@ -201,6 +224,7 @@ def main() -> None:
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
+        scheduler.step()
 
         meter.record(x.numel())
 
@@ -208,6 +232,7 @@ def main() -> None:
             tok_per_s, ms_per_step, warmup = meter.flush()
             note = "  (warmup, excluded from avg)" if warmup else ""
             print(f"Step {step:5d}/{args.steps}  train={loss.item():.4f}  "
+                  f"lr={scheduler.get_last_lr()[0]:.2e}  "
                   f"{tok_per_s:>10,.0f} tok/s  {ms_per_step:7.1f} ms/step{note}")
 
         if step % args.val_interval == 0:
