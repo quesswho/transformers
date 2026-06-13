@@ -38,6 +38,8 @@ class EncoderDecoderTransformer(nn.Module):
         self.decoder = Decoder(config.decoder_config())
         self.projection = nn.Linear(config.d_model, config.tgt_vocab_size)
         _init_weights(self)
+        if config.tie_embeddings:
+            self.projection.weight = self.decoder.embedding.weight
 
     def count_parameters(self) -> dict[str, int]:
         def n(m): return sum(p.numel() for p in m.parameters())
@@ -47,6 +49,10 @@ class EncoderDecoderTransformer(nn.Module):
         dec_norms = n(self.decoder.norm) + sum(
             n(l.norm1) + n(l.norm2) + n(l.norm3) for l in self.decoder.layers
         )
+        projection = n(self.projection)
+        if self.projection.weight is self.decoder.embedding.weight:
+            # Tied: the weight is shared with the embedding, count it once there.
+            projection -= self.projection.weight.numel()
         return {
             "embeddings":         n(self.encoder.embedding) + n(self.decoder.embedding),
             "encoder_attention":  sum(n(l.self_attn) for l in self.encoder.layers),
@@ -56,7 +62,7 @@ class EncoderDecoderTransformer(nn.Module):
             "decoder_cross_attn": sum(n(l.cross_attn) for l in self.decoder.layers),
             "decoder_ffn":        sum(n(l.ff) for l in self.decoder.layers),
             "decoder_norms":      dec_norms,
-            "projection":         n(self.projection),
+            "projection":         projection,
         }
 
     def encode(self, src: torch.Tensor, src_mask: torch.Tensor) -> torch.Tensor:
@@ -114,6 +120,8 @@ class DecoderOnlyTransformer(nn.Module):
         self.stack = TransformerStack(config)
         self.projection = nn.Linear(config.d_model, config.vocab_size)
         _init_weights(self)
+        if config.tie_embeddings:
+            self.projection.weight = self.stack.embedding.weight
 
     @classmethod
     def from_checkpoint(
@@ -134,12 +142,16 @@ class DecoderOnlyTransformer(nn.Module):
         norms = n(self.stack.norm) + sum(
             n(l.norm1) + n(l.norm2) for l in self.stack.layers
         )
+        projection = n(self.projection)
+        if self.projection.weight is self.stack.embedding.weight:
+            # Tied: the weight is shared with the embedding, count it once there.
+            projection -= self.projection.weight.numel()
         return {
             "embeddings": n(self.stack.embedding),
             "attention":  sum(n(l.self_attn) for l in self.stack.layers),
             "ffn":        sum(n(l.ff) for l in self.stack.layers),
             "norms":      norms,
-            "projection": n(self.projection),
+            "projection": projection,
         }
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

@@ -13,6 +13,7 @@ class ModelConfig:
     d_ff: int = 2048
     dropout: float = 0.1
     max_len: int = 5000
+    tie_embeddings: bool = True  # share input embedding and output projection weights
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -33,6 +34,7 @@ class EncoderDecoderConfig:
     dropout: float = 0.1
     max_len: int = 5000
     pad_idx: int = 0
+    tie_embeddings: bool = False  # tie decoder input embedding and output projection
 
     def encoder_config(self) -> ModelConfig:
         return ModelConfig(
@@ -54,6 +56,7 @@ class EncoderDecoderConfig:
             d_ff=self.d_ff,
             dropout=self.dropout,
             max_len=self.max_len,
+            tie_embeddings=self.tie_embeddings,
         )
 
     def to_dict(self) -> dict:
