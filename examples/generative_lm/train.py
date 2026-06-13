@@ -16,14 +16,8 @@ Run from project root:
 """
 
 import argparse
-import hashlib
 import os
 import sys
-import tempfile
-import time
-import urllib.request
-
-import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
@@ -32,132 +26,20 @@ import torch.nn as nn
 
 from transformer import DecoderOnlyTransformer, ModelConfig
 from tokenizer import SentencePieceBPE
+from training import (
+    Prefetcher,
+    ThroughputMeter,
+    get_batch,
+    load_checkpoint,
+    print_param_table,
+    restore_training_state,
+    save_checkpoint,
+)
 
-DATA_URL = "https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt"
-
-
-def save_checkpoint(path, model, optimizer, step, tokenizer, config: ModelConfig):
-    # torch.compile wraps the model and prefixes state_dict keys with
-    # "_orig_mod."; save the underlying module so checkpoints load into an
-    # uncompiled model.
-    model = getattr(model, "_orig_mod", model)
-    torch.save({
-        "model_state_dict": model.state_dict(),
-        "optimizer_state_dict": optimizer.state_dict(),
-        "step": step,
-        "tokenizer": tokenizer.to_dict(),
-        "config": config.to_dict(),
-    }, path)
+from data import load_text, load_tokens
 
 
-def load_text(path: str | None) -> str:
-    if path is not None:
-        with open(path, "r", encoding="utf-8") as f:
-            return f.read()
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".txt")
-    tmp.close()
-    print("Downloading tinyshakespeare...")
-    urllib.request.urlretrieve(DATA_URL, tmp.name)
-    with open(tmp.name, "r", encoding="utf-8") as f:
-        text = f.read()
-    os.unlink(tmp.name)
-    return text
-
-
-def _tokenizer_fingerprint(tokenizer) -> str:
-    d = tokenizer.to_dict()
-    raw = str(sorted(d.get("vocab", {}).items())) + str(d.get("merges", []))
-    return hashlib.sha256(raw.encode()).hexdigest()[:16]
-
-
-def _load_tokens(text: str, tokenizer, data_path: str | None) -> np.ndarray:
-    cache_path = None
-    if data_path is not None:
-        stat = os.stat(data_path)
-        key = f"{stat.st_size}_{int(stat.st_mtime)}_{_tokenizer_fingerprint(tokenizer)}"
-        cache_path = data_path + f".{key}.tokens.npy"
-        if os.path.exists(cache_path):
-            print(f"Loading cached tokens from {cache_path}...")
-            return np.load(cache_path, mmap_mode="r")
-
-    print("Encoding corpus...")
-    tokens = tokenizer.encode(text)
-    arr = np.asarray(tokens, dtype=np.int32)
-
-    if cache_path is not None:
-        np.save(cache_path, arr)
-        print(f"Token cache written → {cache_path}")
-
-    return arr
-
-
-def get_batch(
-    data: np.ndarray, block_size: int, batch_size: int, device: torch.device
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Sample a whole batch of random windows with one vectorized gather.
-
-    Avoids the per-sample Python overhead of Dataset/DataLoader (64 __getitem__
-    calls + collate per step). Works on the mmap'd token cache as well.
-
-    Tokens are gathered and transferred as int32 (half the bytes of int64) and
-    cast to long on the device, where nn.Embedding and cross-entropy need them.
-    Used for the CPU path and validation; the training loop uses Prefetcher to
-    overlap this work with GPU compute.
-    """
-    ix = np.random.randint(0, len(data) - block_size, size=batch_size)
-    batch = torch.from_numpy(data[ix[:, None] + np.arange(block_size + 1)])
-    x, y = batch[:, :-1], batch[:, 1:]
-    if device.type == "cuda":
-        # Pinned staging buffers let the H2D copy overlap with GPU compute; the
-        # int32 -> int64 widening happens on the GPU after the smaller transfer.
-        x = x.pin_memory().to(device, non_blocking=True).long()
-        y = y.pin_memory().to(device, non_blocking=True).long()
-        return x, y
-    return x.long(), y.long()
-
-
-class Prefetcher:
-    """Overlaps batch preparation with GPU compute.
-
-    While the GPU runs step N, the next batch's CPU gather + H2D copy run on a
-    side stream, hiding the data-path latency that otherwise sits on the
-    critical path before each forward. Tokens move as int32 (half the bytes of
-    int64) and are cast to long on the GPU. PyTorch's caching host/device
-    allocators recycle the pinned and device buffers across steps, so there is
-    no per-step cudaHostAlloc; record_stream keeps that recycling safe.
-    """
-
-    def __init__(
-        self, data: np.ndarray, block_size: int, batch_size: int, device: torch.device
-    ) -> None:
-        self.data = data
-        self.block_size = block_size
-        self.batch_size = batch_size
-        self.device = device
-        self.stream = torch.cuda.Stream()
-        self._preload()
-
-    def _preload(self) -> None:
-        ix = np.random.randint(0, len(self.data) - self.block_size, size=self.batch_size)
-        batch = torch.from_numpy(self.data[ix[:, None] + np.arange(self.block_size + 1)])
-        x, y = batch[:, :-1].pin_memory(), batch[:, 1:].pin_memory()
-        with torch.cuda.stream(self.stream):
-            self.next_x = x.to(self.device, non_blocking=True).long()
-            self.next_y = y.to(self.device, non_blocking=True).long()
-
-    def next(self) -> tuple[torch.Tensor, torch.Tensor]:
-        torch.cuda.current_stream().wait_stream(self.stream)
-        x, y = self.next_x, self.next_y
-        # Mark the buffers as in use on the default stream so the allocator does
-        # not recycle them while the current step is still reading them.
-        x.record_stream(torch.cuda.current_stream())
-        y.record_stream(torch.cuda.current_stream())
-        self._preload()
-        return x, y
-
-
-
-def main() -> None:
+def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train a generative language model.")
     parser.add_argument("--data", default=None, help="Path to a .txt training file (default: auto-download tinyshakespeare)")
     parser.add_argument("--output", default="model.pt", help="Path to save the checkpoint (default: model.pt)")
@@ -185,23 +67,10 @@ def main() -> None:
     # as suggested in https://arxiv.org/pdf/2002.05202
     if args.d_ff is None:
         args.d_ff = round(8 / 3 * args.d_model)
+    return args
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Training on {device}\n")
 
-    # Allow TF32 matmuls for the ops that remain in fp32 (free speedup on Ampere+).
-    torch.set_float32_matmul_precision("high")
-    # bf16 autocast: We use a float type with the same exponent range as fp32 
-    # but with less precision.
-    # Master weights and the optimizer stay in fp32; only the forward/backward
-    # compute runs in bf16.
-    # This gives a whopping 79% speedup (69k tokens/sec -> 120k tokens/sec) in our tests on an RTX 3060
-    use_amp = device.type == "cuda" and torch.cuda.is_bf16_supported()
-    if use_amp:
-        print("Using bf16 mixed precision\n")
-
-    text = load_text(args.data)
-    print(f"Finished loading text from {args.data}...")
+def build_tokenizer(args: argparse.Namespace, text: str) -> SentencePieceBPE:
     if args.tokenizer is not None:
         print(f"Loading tokenizer from {args.tokenizer}...")
         tokenizer = SentencePieceBPE.load(args.tokenizer)
@@ -218,13 +87,57 @@ def main() -> None:
             os.makedirs(save_dir, exist_ok=True)
         tokenizer.save(args.save_tokenizer)
         print(f"Tokenizer saved → {args.save_tokenizer}\n")
+    return tokenizer
+
+
+def evaluate(model, val_data, block_size, batch_size, criterion, vocab_size, device, use_amp) -> float:
+    """Mean validation loss over a fixed number of random batches.
+
+    The loss is accumulated on-device and read back with a single .item() after
+    the loop. Calling .item() per batch would force a CUDA sync each iteration,
+    stalling the GPU between forwards instead of letting the validation batches
+    queue back-to-back.
+    """
+    model.eval()
+    val_batches = 20
+    val_loss_sum = torch.zeros((), device=device)
+    with torch.no_grad():
+        for _ in range(val_batches):
+            vx, vy = get_batch(val_data, block_size, batch_size, device)
+            with torch.autocast("cuda", dtype=torch.bfloat16, enabled=use_amp):
+                vlogits = model(vx)
+                vloss = criterion(vlogits.view(-1, vocab_size), vy.view(-1))
+            val_loss_sum += vloss.detach()
+    return (val_loss_sum / val_batches).item()
+
+
+def main() -> None:
+    args = parse_args()
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Training on {device}\n")
+
+    # Allow TF32 matmuls for the ops that remain in fp32 (free speedup on Ampere+).
+    torch.set_float32_matmul_precision("high")
+    # bf16 autocast: We use a float type with the same exponent range as fp32
+    # but with less precision.
+    # Master weights and the optimizer stay in fp32; only the forward/backward
+    # compute runs in bf16.
+    # This gives a whopping 79% speedup (69k tokens/sec -> 120k tokens/sec) in our tests on an RTX 3060
+    use_amp = device.type == "cuda" and torch.cuda.is_bf16_supported()
+    if use_amp:
+        print("Using bf16 mixed precision\n")
+
+    text = load_text(args.data)
+    print(f"Finished loading text from {args.data}...")
+    tokenizer = build_tokenizer(args, text)
 
     if args.vocab_only:
         if args.save_tokenizer is None:
             print("Warning: --vocab-only set but --save-tokenizer not specified; tokenizer was not saved.")
         return
 
-    data = _load_tokens(text, tokenizer, args.data)
+    data = load_tokens(text, tokenizer, args.data)
     vocab_size = tokenizer.vocab_size
 
     split = int(0.9 * len(data))
@@ -237,7 +150,7 @@ def main() -> None:
     if args.resume:
         # The checkpoint's config is the source of truth for the architecture;
         # CLI model arguments are ignored when resuming.
-        ckpt = torch.load(args.resume, map_location=device, weights_only=False)
+        ckpt = load_checkpoint(args.resume, map_location=device)
         config = ModelConfig.from_dict(ckpt["config"])
         if config.vocab_size != vocab_size:
             sys.exit(
@@ -257,13 +170,7 @@ def main() -> None:
     block_size = config.max_len
 
     model = DecoderOnlyTransformer(config).to(device)
-
-    counts = model.count_parameters()
-    total = sum(counts.values())
-    print(f"{'Component':<25} {'Params':>12}  {'%':>6}")
-    for name, val in counts.items():
-        print(f"  {name:<23} {val:>12,}  {val/total*100:>5.1f}%")
-    print(f"  {'TOTAL':<23} {total:>12,}\n")
+    print_param_table(model.count_parameters())
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.1, fused=True)
     criterion = nn.CrossEntropyLoss()
@@ -271,14 +178,7 @@ def main() -> None:
     start_step = 1
     best_val_loss = float("inf")
     if ckpt is not None:
-        model.load_state_dict(ckpt["model_state_dict"])
-        if "optimizer_state_dict" in ckpt:
-            try:
-                optimizer.load_state_dict(ckpt["optimizer_state_dict"])
-            except ValueError:
-                print("Warning: optimizer state skipped (parameter layout changed); optimizer restarted.\n")
-        if "step" in ckpt:
-            start_step = ckpt["step"] + 1
+        start_step = restore_training_state(model, optimizer, ckpt)
         print(f"Resumed from {args.resume} at step {start_step}\n")
 
     if args.compile:
@@ -289,18 +189,7 @@ def main() -> None:
     # On CUDA, overlap the next batch's gather + H2D copy with the current
     # step's compute. The CPU path falls back to a synchronous get_batch.
     prefetcher = Prefetcher(train_data, block_size, args.batch_size, device) if device.type == "cuda" else None
-
-    # Speed measurement: GPU work is async, so the clock is only read after a
-    # synchronize. The first window (warmup: cuDNN autotune, allocator growth,
-    # torch.compile) is excluded from the reported average, as is validation.
-    if device.type == "cuda":
-        torch.cuda.synchronize()
-    window_start = time.perf_counter()
-    window_tokens = 0
-    window_steps = 0
-    warmup_window = True
-    measured_time = 0.0
-    measured_tokens = 0
+    meter = ThroughputMeter(device)
 
     for step in range(start_step, args.steps + 1):
         model.train()
@@ -313,40 +202,16 @@ def main() -> None:
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
 
-        window_tokens += x.numel()
-        window_steps += 1
+        meter.record(x.numel())
 
         if step % args.log_interval == 0:
-            if device.type == "cuda":
-                torch.cuda.synchronize()
-            dt = time.perf_counter() - window_start
-            tok_per_s = window_tokens / dt
-            ms_per_step = dt / window_steps * 1000
-            note = "  (warmup, excluded from avg)" if warmup_window else ""
+            tok_per_s, ms_per_step, warmup = meter.flush()
+            note = "  (warmup, excluded from avg)" if warmup else ""
             print(f"Step {step:5d}/{args.steps}  train={loss.item():.4f}  "
                   f"{tok_per_s:>10,.0f} tok/s  {ms_per_step:7.1f} ms/step{note}")
-            if warmup_window:
-                warmup_window = False
-            else:
-                measured_time += dt
-                measured_tokens += window_tokens
 
         if step % args.val_interval == 0:
-            model.eval()
-            # Accumulate the loss on-device and read it back with a single
-            # .item() after the loop. Calling .item() per batch would force a
-            # CUDA sync each iteration, stalling the GPU between forwards
-            # instead of letting the validation batches queue back-to-back.
-            val_batches = 20
-            val_loss_sum = torch.zeros((), device=device)
-            with torch.no_grad():
-                for _ in range(val_batches):
-                    vx, vy = get_batch(val_data, block_size, args.batch_size, device)
-                    with torch.autocast("cuda", dtype=torch.bfloat16, enabled=use_amp):
-                        vlogits = model(vx)
-                        vloss = criterion(vlogits.view(-1, vocab_size), vy.view(-1))
-                    val_loss_sum += vloss.detach()
-            val_loss = (val_loss_sum / val_batches).item()
+            val_loss = evaluate(model, val_data, block_size, args.batch_size, criterion, vocab_size, device, use_amp)
             print(f"Step {step:5d}/{args.steps}  train={loss.item():.4f}  val={val_loss:.4f}")
             if args.checkpoint_dir is not None:
                 os.makedirs(args.checkpoint_dir, exist_ok=True)
@@ -359,15 +224,11 @@ def main() -> None:
         # Restart the measurement window after any pause (logging sync,
         # validation, checkpointing) so only pure training steps are timed.
         if step % args.log_interval == 0 or step % args.val_interval == 0:
-            if device.type == "cuda":
-                torch.cuda.synchronize()
-            window_start = time.perf_counter()
-            window_tokens = 0
-            window_steps = 0
+            meter.reset_window()
 
-    if measured_tokens > 0:
-        print(f"\nAvg training speed: {measured_tokens / measured_time:,.0f} tok/s "
-              f"({measured_tokens:,} tokens in {measured_time:.1f}s, warmup & validation excluded)")
+    summary = meter.summary()
+    if summary is not None:
+        print(f"\n{summary}")
     if device.type == "cuda":
         print(f"Peak GPU memory: {torch.cuda.max_memory_allocated() / 1024**2:,.0f} MiB")
 

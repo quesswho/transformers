@@ -16,6 +16,7 @@ import torch
 import torch.nn as nn
 
 from transformer import EncoderDecoderConfig, EncoderDecoderTransformer
+from training import print_param_table
 
 PAD_IDX = 0
 SOS_IDX = 1
@@ -55,12 +56,7 @@ def train() -> None:
         pad_idx=PAD_IDX,
     )).to(device)
 
-    counts = model.count_parameters()
-    total = sum(counts.values())
-    print(f"{'Component':<25} {'Params':>12}  {'%':>6}")
-    for name, val in counts.items():
-        print(f"  {name:<23} {val:>12,}  {val/total*100:>5.1f}%")
-    print(f"  {'TOTAL':<23} {total:>12,}\n")
+    print_param_table(model.count_parameters())
 
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
     criterion = nn.CrossEntropyLoss(ignore_index=PAD_IDX)
