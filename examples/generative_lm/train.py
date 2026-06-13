@@ -333,15 +333,20 @@ def main() -> None:
 
         if step % args.val_interval == 0:
             model.eval()
-            val_losses = []
+            # Accumulate the loss on-device and read it back with a single
+            # .item() after the loop. Calling .item() per batch would force a
+            # CUDA sync each iteration, stalling the GPU between forwards
+            # instead of letting the validation batches queue back-to-back.
+            val_batches = 20
+            val_loss_sum = torch.zeros((), device=device)
             with torch.no_grad():
-                for _ in range(20):
+                for _ in range(val_batches):
                     vx, vy = get_batch(val_data, block_size, args.batch_size, device)
                     with torch.autocast("cuda", dtype=torch.bfloat16, enabled=use_amp):
                         vlogits = model(vx)
                         vloss = criterion(vlogits.view(-1, vocab_size), vy.view(-1))
-                    val_losses.append(vloss.item())
-            val_loss = sum(val_losses) / len(val_losses)
+                    val_loss_sum += vloss.detach()
+            val_loss = (val_loss_sum / val_batches).item()
             print(f"Step {step:5d}/{args.steps}  train={loss.item():.4f}  val={val_loss:.4f}")
             if args.checkpoint_dir is not None:
                 os.makedirs(args.checkpoint_dir, exist_ok=True)
