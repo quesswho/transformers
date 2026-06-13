@@ -1,9 +1,9 @@
 """Task adapters: map a raw JSONL record to scoreable minimal-pair candidates.
 
 Each adapter turns one record into one or more ``Example``s. An ``Example`` is a
-list of candidate strings to score plus the index of the correct one (always 0 in
-the BabyLM data — the good/acceptable variant is listed first) and a ``uid`` used
-to group results into paradigms/subsets for reporting.
+list of candidate strings to score plus the index of the correct one (the bundled
+adapters all list the good/acceptable variant first, so ``label=0``) and a ``uid``
+used to group results into paradigms/subsets for reporting.
 
 A candidate is one of:
   ``("seq", text)``                 -> score the whole sentence (BLiMP / supplement)
@@ -11,8 +11,8 @@ A candidate is one of:
                                        ``sentence``, in the context of its prefix
                                        (EWoK / COMPS / entity-tracking)
 
-These mirror ``sentence_zero_shot/read_files.py`` in the official pipeline, down
-to the exact string joins (e.g. EWoK's leading-space target, COMPS' space join).
+To add a new task, write an adapter ``(record, stem) -> list[Example]`` and register
+it in ``TASKS`` below with the subdirectory its JSONL data lives in.
 """
 
 from __future__ import annotations
@@ -44,8 +44,7 @@ def _blimp(record: dict, stem: str) -> list[Example]:
 def _ewok(record: dict, stem: str) -> list[Example]:
     """EWoK: a target is more likely under its matching context than the opposing
     one. Each record yields two examples (one per target), completion-scored on the
-    target only. (Requires running the official ``ewok/dl_and_filter.py`` first —
-    EWoK is not redistributed in the BabyLM eval dataset.)"""
+    target only."""
     c1, c2 = record["Context1"], record["Context2"]
     t1, t2 = record["Target1"], record["Target2"]
     uid = record.get("Domain", stem)
@@ -91,8 +90,7 @@ class TaskSpec:
     adapter: Callable[[dict, str], list[Example]]
 
 
-# Registry: task name -> where its data lives + how to read it. Subdir names match
-# the official ``evaluation_data/full_eval`` layout.
+# Registry: task name -> where its data lives + how to read it. Add new tasks here.
 TASKS: dict[str, TaskSpec] = {
     "blimp": TaskSpec("blimp_filtered", _blimp),
     "supplement": TaskSpec("supplement_filtered", _blimp),

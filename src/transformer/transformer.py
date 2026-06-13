@@ -1,3 +1,5 @@
+import math
+
 import torch
 import torch.nn as nn
 from .config import EncoderDecoderConfig, ModelConfig
@@ -16,17 +18,27 @@ def make_tgt_mask(tgt: torch.Tensor, pad_idx: int = 0) -> torch.Tensor:
     return causal & padding
 
 
-def _init_weights(model: nn.Module) -> None:
+def _init_weights(model: nn.Module, num_layers: int) -> None:
+    """GPT-2-style initialization.
+
+    Weight matrices (and embeddings) are drawn from N(0, 0.02); biases are
+    zeroed and 1-D parameters (RMSNorm gains) are left untouched. The residual
+    output projections (attention ``w_o``, feed-forward ``w_out``) are then
+    scaled by 1/sqrt(2 * num_layers): each block adds two residual contributions
+    to the stream, so without this down-scaling the residual-stream variance
+    grows with depth. Per-element normal init is shape-independent, so the fused
+    ``w_qkv`` needs no special-casing.
+    """
     for name, p in model.named_parameters():
-        if p.dim() <= 1:
-            continue
-        if name.endswith("w_qkv.weight"):
-            # Xavier each projection at its own (d_model, d_model) fan, not the
-            # fused (3*d_model, d_model) shape, which would shrink the scale.
-            for chunk in p.data.chunk(3, dim=0):
-                nn.init.xavier_uniform_(chunk)
-        else:
-            nn.init.xavier_uniform_(p)
+        if name.endswith("bias"):
+            nn.init.zeros_(p)
+        elif p.dim() >= 2:
+            nn.init.normal_(p, mean=0.0, std=0.02)
+
+    scale = 1.0 / math.sqrt(2 * num_layers)
+    for name, p in model.named_parameters():
+        if name.endswith(("w_o.weight", "w_out.weight")):
+            p.data.mul_(scale)
 
 
 class EncoderDecoderTransformer(nn.Module):
@@ -37,7 +49,7 @@ class EncoderDecoderTransformer(nn.Module):
         self.encoder = TransformerStack(config.encoder_config())
         self.decoder = Decoder(config.decoder_config())
         self.projection = nn.Linear(config.d_model, config.tgt_vocab_size)
-        _init_weights(self)
+        _init_weights(self, config.num_layers)
         if config.tie_embeddings:
             self.projection.weight = self.decoder.embedding.weight
 
@@ -119,7 +131,7 @@ class DecoderOnlyTransformer(nn.Module):
         self.max_seq_len = config.max_seq_len
         self.stack = TransformerStack(config)
         self.projection = nn.Linear(config.d_model, config.vocab_size)
-        _init_weights(self)
+        _init_weights(self, config.num_layers)
         if config.tie_embeddings:
             self.projection.weight = self.stack.embedding.weight
 

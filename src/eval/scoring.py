@@ -1,17 +1,15 @@
 """Per-token log-likelihood scoring for a causal LM.
 
-Every zero-shot BabyLM task (BLiMP, EWoK, COMPS, entity-tracking) reduces to the
-same question: which of two (or more) candidate strings does the model assign the
-higher log-probability to? This module provides that primitive against the repo's
-native ``DecoderOnlyTransformer`` (whose ``forward(ids)`` returns logits
-``[B, T, V]``).
+Every minimal-pair task (BLiMP, EWoK, COMPS, entity-tracking) reduces to the same
+question: which of two (or more) candidate strings does the model assign the higher
+log-probability to? This module provides that primitive against the repo's native
+``DecoderOnlyTransformer`` (whose ``forward(ids)`` returns logits ``[B, T, V]``).
 
-Scoring matches the official pipeline's causal backend
-(``sentence_zero_shot/compute_results.py``): the score of a span is the **sum**
-(not the mean) of ``log_softmax`` log-probs over the tokens in that span, where
-token ``t`` is predicted from the tokens before it. Tokens are selected by their
-character offset, so a "completion" (e.g. the EWoK target) can be scored in the
-context of its prefix while only the completion's tokens contribute.
+The score of a span is the **sum** (not the mean) of ``log_softmax`` log-probs over
+the tokens in that span, where token ``t`` is predicted from the tokens before it.
+Tokens are selected by their character offset, so a "completion" (e.g. the EWoK
+target) can be scored in the context of its prefix while only the completion's
+tokens contribute.
 
 Runs at batch_size=1: the decoder-only stack is causal-only with no padding mask,
 so there is nothing to gain from padding a batch here.
@@ -29,8 +27,8 @@ def _target_logprobs(model, ids: list[int], device) -> torch.Tensor:
 
     Returns a 1-D tensor ``lp`` of length ``len(ids) - 1`` where ``lp[i]`` is the
     model's log-probability of ``ids[i + 1]`` conditioned on ``ids[:i + 1]``. The
-    very first token has no context and is therefore never scored (mirrors the
-    official ``targets = tokens[1:]`` shift)."""
+    very first token has no context and is therefore never scored (the standard
+    ``targets = tokens[1:]`` shift)."""
     x = torch.as_tensor(ids, dtype=torch.long, device=device).unsqueeze(0)
     logits = model(x)[0]  # [T, V]
     log_probs = F.log_softmax(logits[:-1].float(), dim=-1)  # predicts ids[1:]
@@ -66,6 +64,6 @@ def completion_logprob(model, tokenizer, sentence: str, completion: str, *, devi
     """Log-probability of ``completion`` as the suffix of ``sentence``, scored in
     the context of the preceding prefix (EWoK / COMPS / entity-tracking).
 
-    The completion is located by character length from the end, exactly as the
-    official pipeline does (``start_char = len(sentence) - len(completion)``)."""
+    The completion is located by character length from the end
+    (``start_char = len(sentence) - len(completion)``)."""
     return score_span(model, tokenizer, sentence, start_char=len(sentence) - len(completion), device=device)

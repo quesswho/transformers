@@ -1,10 +1,10 @@
 """Run minimal-pair accuracy for a task and aggregate the results.
 
 For each ``Example`` we score every candidate and the model is "correct" when the
-labelled candidate (index 0 in BabyLM data) scores strictly highest. Results are
-collected per ``uid`` (paradigm/subset); the headline task accuracy is the macro
-average over uids — matching how the official pipeline averages subdomain
-accuracies — and we also report the micro count.
+labelled candidate scores strictly highest. Results are collected per ``uid``
+(paradigm/subset); the headline task accuracy is the macro average over uids (the
+conventional way to average subdomain accuracies), and we also report the micro
+count.
 """
 
 from __future__ import annotations

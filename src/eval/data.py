@@ -1,10 +1,10 @@
-"""Loading BabyLM zero-shot task data from local JSONL files.
+"""Loading zero-shot task data from local JSONL files.
 
-The official eval data ships as one directory per task, each holding one ``.jsonl``
-file per paradigm (e.g. ``blimp_filtered/adjunct_island.jsonl``). Each line is one
-record; the fields differ per task and are interpreted by the adapters in
-``tasks.py``. This module just walks the directory and yields ``(stem, record)``
-pairs, where ``stem`` is the paradigm name (the filename without ``.jsonl``).
+The expected layout is one directory per task, each holding one ``.jsonl`` file per
+paradigm (e.g. ``blimp_filtered/adjunct_island.jsonl``). Each line is one record;
+the fields differ per task and are interpreted by the adapters in ``tasks.py``. This
+module just walks the directory and yields ``(stem, record)`` pairs, where ``stem``
+is the paradigm name (the filename without ``.jsonl``).
 """
 
 from __future__ import annotations
