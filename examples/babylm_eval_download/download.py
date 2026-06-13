@@ -9,6 +9,7 @@ expects:
     data/eval/supplement_filtered/*.jsonl
     data/eval/comps/*.jsonl
     data/eval/entity_tracking/*.jsonl
+    data/eval/reading/reading_data.csv
 
   https://huggingface.co/datasets/BabyLM-community/BabyLM-2026-Strict-Evals
 
@@ -17,9 +18,8 @@ The file list is queried from the HF API at runtime, so new paradigms are picked
 up automatically.
 
 Note on EWoK: it is *not* redistributed in this dataset (licensing), so it is not
-downloaded here. To score EWoK, run the official `strict/evaluation_pipeline/ewok/
-dl_and_filter.py` to produce `ewok_filtered/*.jsonl`, then drop that directory
-under data/eval/.
+downloaded here. Run examples/babylm_eval_download/download_ewok.py to fetch and
+filter it into data/eval/ewok_filtered/.
 
 Run from project root:
     python examples/babylm_eval_download/download.py
@@ -35,13 +35,14 @@ REPO = "BabyLM-community/BabyLM-2026-Strict-Evals"
 API_URL = f"https://huggingface.co/api/datasets/{REPO}"
 RESOLVE_URL = f"https://huggingface.co/datasets/{REPO}/resolve/main/{{path}}"
 
-# The zero-shot tasks scored by src/eval. (GLUE is fine-tuning, EWoK is fetched
-# separately — both are intentionally excluded here.)
-TASK_SUBDIRS = ["blimp_filtered", "supplement_filtered", "comps", "entity_tracking"]
+# The tasks scored by src/eval. (GLUE is fine-tuning, EWoK is fetched separately —
+# both are intentionally excluded here.) The minimal-pair tasks are JSONL; reading
+# ships as a single CSV.
+TASK_SUBDIRS = ["blimp_filtered", "supplement_filtered", "comps", "entity_tracking", "reading"]
 
 
 def list_files(split: str) -> list[str]:
-    """Return every JSONL path in the dataset under evaluation_data/<split>/ that
+    """Return every JSONL/CSV path in the dataset under evaluation_data/<split>/ that
     belongs to one of TASK_SUBDIRS."""
     with urllib.request.urlopen(API_URL) as resp:
         meta = json.load(resp)
@@ -50,7 +51,7 @@ def list_files(split: str) -> list[str]:
     return [
         s["rfilename"]
         for s in meta["siblings"]
-        if s["rfilename"].startswith(wanted) and s["rfilename"].endswith(".jsonl")
+        if s["rfilename"].startswith(wanted) and s["rfilename"].endswith((".jsonl", ".csv"))
     ]
 
 
