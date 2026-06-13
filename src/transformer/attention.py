@@ -1,11 +1,18 @@
-import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from .layers import RotaryEmbedding
+
 
 class MultiHeadAttention(nn.Module):
-    def __init__(self, d_model: int = 512, nhead: int = 8, dropout: float = 0.1) -> None:
+    def __init__(
+        self,
+        d_model: int = 512,
+        nhead: int = 8,
+        dropout: float = 0.1,
+        rope: RotaryEmbedding | None = None,
+    ) -> None:
         super().__init__()
         assert d_model % nhead == 0, "d_model must be divisible by nhead"
         self.d_k = d_model // nhead
@@ -16,6 +23,9 @@ class MultiHeadAttention(nn.Module):
         self.w_qkv = nn.Linear(d_model, 3 * d_model)
         self.w_o = nn.Linear(d_model, d_model)
         self.dropout = nn.Dropout(dropout)
+        # Rotary position embedding, shared across layers. None for cross-attention,
+        # which spans two coordinate frames and so carries no rotary position.
+        self.rope = rope
 
     def forward(
         self,
@@ -25,6 +35,7 @@ class MultiHeadAttention(nn.Module):
         mask: torch.Tensor | None = None,
         past_kv: tuple[torch.Tensor, torch.Tensor] | None = None,
         is_causal: bool = False,
+        offset: int = 0,
     ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
         B = query.size(0)
         d = self.d_model
@@ -46,6 +57,11 @@ class MultiHeadAttention(nn.Module):
             return x.view(B, -1, self.nhead, self.d_k).transpose(1, 2)
 
         q, k, v = split_heads(q), split_heads(k), split_heads(v)
+
+        # Rotate the new q and k by their absolute positions before they hit the
+        # cache, so the stored keys are already rotated and concatenation Just Works.
+        if self.rope is not None:
+            q, k = self.rope(q, k, offset)
 
         if past_kv is not None:
             k = torch.cat([past_kv[0], k], dim=2)

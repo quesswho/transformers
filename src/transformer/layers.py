@@ -1,4 +1,3 @@
-import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -29,19 +28,40 @@ class FeedForward(nn.Module):
         return self.w_out(self.dropout(self.act(self.w_gate(x)) * self.w_value(x)))
 
 
-class PositionalEncoding(nn.Module):
-    def __init__(self, d_model: int = 512, dropout: float = 0.1, max_len: int = 5000) -> None:
+class RotaryEmbedding(nn.Module):
+    """Rotary position embedding (RoPE). Rotates query/key vectors by an angle
+    proportional to their absolute position, which makes the dot product depend
+    only on the *relative* offset between positions. Applied inside attention on
+    the per-head vectors, so it leaves the SDPA flash path intact.
+
+    A single instance is shared across all attention layers in a stack: the only
+    state is the `inv_freq` buffer, and cos/sin are recomputed per call (cheap
+    next to the attention matmuls) so arbitrary KV-cache offsets just work."""
+
+    def __init__(self, dim: int, theta: float = 10000.0) -> None:
         super().__init__()
-        self.dropout = nn.Dropout(dropout)
+        assert dim % 2 == 0, "rotary dim (d_model // nhead) must be even"
+        inv_freq = 1.0 / (theta ** (torch.arange(0, dim, 2, dtype=torch.float32) / dim))
+        self.register_buffer("inv_freq", inv_freq, persistent=False)
 
-        pe = torch.zeros(1, max_len, d_model)
-        position = torch.arange(0, max_len).unsqueeze(1).float()
-        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
-        pe[0, :, 0::2] = torch.sin(position * div_term)
-        pe[0, :, 1::2] = torch.cos(position * div_term)
-        self.register_buffer("pe", pe)
+    @staticmethod
+    def _rotate_half(x: torch.Tensor) -> torch.Tensor:
+        x1, x2 = x.chunk(2, dim=-1)
+        return torch.cat((-x2, x1), dim=-1)
 
-    def forward(self, x: torch.Tensor, offset: int = 0) -> torch.Tensor:
-        offset = min(offset, self.pe.size(1) - x.size(1))
-        x = x + self.pe[:, offset : offset + x.size(1), :]
-        return self.dropout(x)
+    def forward(
+        self, q: torch.Tensor, k: torch.Tensor, offset: int = 0
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        # q, k: (B, nhead, T, d_k). In self-attention the new q and k share the
+        # same length and absolute positions offset .. offset + T.
+        T = q.size(-2)
+        pos = torch.arange(offset, offset + T, device=q.device, dtype=torch.float32)
+        freqs = torch.outer(pos, self.inv_freq)          # (T, d_k/2)
+        emb = torch.cat((freqs, freqs), dim=-1)           # (T, d_k)
+        cos = emb.cos()[None, None, :, :]                 # (1, 1, T, d_k)
+        sin = emb.sin()[None, None, :, :]
+        # Rotation runs in fp32 (cos/sin promote q,k) then casts back, so it is
+        # numerically stable under bf16/fp16 autocast.
+        q_rot = (q * cos) + (self._rotate_half(q) * sin)
+        k_rot = (k * cos) + (self._rotate_half(k) * sin)
+        return q_rot.type_as(q), k_rot.type_as(k)

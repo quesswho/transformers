@@ -3,13 +3,15 @@ import torch
 import torch.nn as nn
 from .attention import MultiHeadAttention
 from .config import ModelConfig
-from .layers import FeedForward, PositionalEncoding, RMSNorm
+from .layers import FeedForward, RMSNorm, RotaryEmbedding
 
 
 class DecoderLayer(nn.Module):
-    def __init__(self, config: ModelConfig) -> None:
+    def __init__(self, config: ModelConfig, rope: RotaryEmbedding) -> None:
         super().__init__()
-        self.self_attn = MultiHeadAttention(config.d_model, config.nhead, config.dropout)
+        # Rotary position embedding applies to self-attention only; cross-attention
+        # bridges the encoder/decoder coordinate frames and stays position-free.
+        self.self_attn = MultiHeadAttention(config.d_model, config.nhead, config.dropout, rope)
         self.cross_attn = MultiHeadAttention(config.d_model, config.nhead, config.dropout)
         self.ff = FeedForward(config.d_model, config.d_ff, config.dropout)
         self.norm1 = RMSNorm(config.d_model)
@@ -24,10 +26,11 @@ class DecoderLayer(nn.Module):
         src_mask: torch.Tensor | None = None,
         tgt_mask: torch.Tensor | None = None,
         past_kv: tuple[torch.Tensor, torch.Tensor] | None = None,
+        offset: int = 0,
     ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
         # We use Pre-norm as it produces more stable training
         normed = self.norm1(x)
-        self_out, present_kv = self.self_attn(normed, normed, normed, tgt_mask, past_kv)
+        self_out, present_kv = self.self_attn(normed, normed, normed, tgt_mask, past_kv, offset=offset)
         x = x + self.dropout(self_out)
         cross_out, _ = self.cross_attn(self.norm2(x), enc_output, enc_output, src_mask)
         x = x + self.dropout(cross_out)
@@ -39,9 +42,10 @@ class Decoder(nn.Module):
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
         self.embedding = nn.Embedding(config.vocab_size, config.d_model)
-        self.pos_encoding = PositionalEncoding(config.d_model, config.dropout, config.max_len)
+        self.dropout = nn.Dropout(config.dropout)
+        self.rope = RotaryEmbedding(config.d_model // config.nhead, config.rope_theta)
         self.layers = nn.ModuleList(
-            [DecoderLayer(config) for _ in range(config.num_layers)]
+            [DecoderLayer(config, self.rope) for _ in range(config.num_layers)]
         )
         self.norm = RMSNorm(config.d_model)
         self.d_model = config.d_model
@@ -55,10 +59,10 @@ class Decoder(nn.Module):
         past_key_values: list[tuple[torch.Tensor, torch.Tensor]] | None = None,
     ) -> tuple[torch.Tensor, list[tuple[torch.Tensor, torch.Tensor]]]:
         offset = past_key_values[0][0].size(2) if past_key_values is not None else 0
-        x = self.pos_encoding(self.embedding(tgt) * math.sqrt(self.d_model), offset=offset)
+        x = self.dropout(self.embedding(tgt) * math.sqrt(self.d_model))
         present_key_values = []
         for i, layer in enumerate(self.layers):
             past_kv = past_key_values[i] if past_key_values is not None else None
-            x, kv = layer(x, enc_output, src_mask, tgt_mask, past_kv)
+            x, kv = layer(x, enc_output, src_mask, tgt_mask, past_kv, offset)
             present_key_values.append(kv)
         return self.norm(x), present_key_values

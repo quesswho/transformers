@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 from .attention import MultiHeadAttention
 from .config import ModelConfig
-from .layers import FeedForward, PositionalEncoding, RMSNorm
+from .layers import FeedForward, RMSNorm, RotaryEmbedding
 
 
 class TransformerBlock(nn.Module):
@@ -11,9 +11,9 @@ class TransformerBlock(nn.Module):
     depending on the is_causal flag, so it serves both the encoder and
     decoder-only paths."""
 
-    def __init__(self, config: ModelConfig) -> None:
+    def __init__(self, config: ModelConfig, rope: RotaryEmbedding) -> None:
         super().__init__()
-        self.self_attn = MultiHeadAttention(config.d_model, config.nhead, config.dropout)
+        self.self_attn = MultiHeadAttention(config.d_model, config.nhead, config.dropout, rope)
         self.ff = FeedForward(config.d_model, config.d_ff, config.dropout)
         self.norm1 = RMSNorm(config.d_model)
         self.norm2 = RMSNorm(config.d_model)
@@ -25,9 +25,10 @@ class TransformerBlock(nn.Module):
         mask: torch.Tensor | None = None,
         past_kv: tuple[torch.Tensor, torch.Tensor] | None = None,
         is_causal: bool = False,
+        offset: int = 0,
     ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
         normed = self.norm1(x)
-        attn_out, present_kv = self.self_attn(normed, normed, normed, mask, past_kv, is_causal)
+        attn_out, present_kv = self.self_attn(normed, normed, normed, mask, past_kv, is_causal, offset)
         x = x + self.dropout(attn_out)
         x = x + self.dropout(self.ff(self.norm2(x)))
         return x, present_kv
@@ -41,9 +42,10 @@ class TransformerStack(nn.Module):
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
         self.embedding = nn.Embedding(config.vocab_size, config.d_model)
-        self.pos_encoding = PositionalEncoding(config.d_model, config.dropout, config.max_len)
+        self.dropout = nn.Dropout(config.dropout)
+        self.rope = RotaryEmbedding(config.d_model // config.nhead, config.rope_theta)
         self.layers = nn.ModuleList(
-            [TransformerBlock(config) for _ in range(config.num_layers)]
+            [TransformerBlock(config, self.rope) for _ in range(config.num_layers)]
         )
         self.norm = RMSNorm(config.d_model)
         self.d_model = config.d_model
@@ -65,10 +67,10 @@ class TransformerStack(nn.Module):
         offset: int = 0,
         is_causal: bool = False,
     ) -> tuple[torch.Tensor, list[tuple[torch.Tensor, torch.Tensor]]]:
-        x = self.pos_encoding(self.embedding(tokens) * math.sqrt(self.d_model), offset=offset)
+        x = self.dropout(self.embedding(tokens) * math.sqrt(self.d_model))
         present_key_values = []
         for i, layer in enumerate(self.layers):
             past_kv = past_key_values[i] if past_key_values is not None else None
-            x, kv = layer(x, mask, past_kv, is_causal)
+            x, kv = layer(x, mask, past_kv, is_causal, offset)
             present_key_values.append(kv)
         return self.norm(x), present_key_values
