@@ -197,3 +197,28 @@ class DecoderOnlyTransformer(nn.Module):
             if eos_idx is not None and (next_tok == eos_idx).all():
                 break
         return idx
+
+
+class GPTBERT(DecoderOnlyTransformer):
+    """A decoder-only transformer trained jointly as a GPT and a BERT
+    (Charpentier & Samuel, 2024).
+
+    The architecture is identical to ``DecoderOnlyTransformer`` -- the same
+    ``stack`` + tied ``projection`` -- so its checkpoints are interchangeable
+    with the causal model for generation, HF export, and zero-shot evaluation.
+    The only addition is an ``is_causal`` switch on ``forward``:
+
+    * ``is_causal=True``  -> autoregressive next-token prediction (the GPT path).
+    * ``is_causal=False`` -> bidirectional masked-next-token prediction (MNTP,
+      the BERT path), where the input has been mask-corrupted by
+      ``training.get_mntp_batch``.
+
+    MNTP shifts the masked-LM labels by one so the prediction for a masked token
+    is read from the *previous* position's hidden state -- the same output offset
+    the causal objective uses -- which is what lets a single output head serve
+    both objectives. ``generate`` is inherited unchanged and always runs causally.
+    """
+
+    def forward(self, x: torch.Tensor, is_causal: bool = True) -> torch.Tensor:
+        hidden, _ = self.stack(x, is_causal=is_causal)
+        return self.projection(hidden)

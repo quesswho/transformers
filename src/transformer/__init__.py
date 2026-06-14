@@ -3,7 +3,7 @@ from .config import ModelConfig, EncoderDecoderConfig
 from .layers import FeedForward, RMSNorm, RotaryEmbedding
 from .stack import TransformerBlock, TransformerStack
 from .decoder import DecoderLayer, Decoder
-from .transformer import EncoderDecoderTransformer, DecoderOnlyTransformer, make_src_mask, make_tgt_mask
+from .transformer import EncoderDecoderTransformer, DecoderOnlyTransformer, GPTBERT, make_src_mask, make_tgt_mask
 
 __all__ = [
     "ModelConfig",
@@ -18,6 +18,7 @@ __all__ = [
     "Decoder",
     "EncoderDecoderTransformer",
     "DecoderOnlyTransformer",
+    "GPTBERT",
     "make_src_mask",
     "make_tgt_mask",
 ]

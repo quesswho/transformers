@@ -18,7 +18,10 @@ UNK_TOKEN = "<unk>"
 PAD_TOKEN = "<pad>"
 BOS_TOKEN = "<s>"
 EOS_TOKEN = "</s>"
-SPECIAL_TOKENS = [UNK_TOKEN, PAD_TOKEN, BOS_TOKEN, EOS_TOKEN]
+MASK_TOKEN = "<mask>"
+# <mask> is appended last so the existing unk/pad/bos/eos ids (0..3) are
+# unchanged; it feeds the GPT-BERT masked-next-token-prediction objective.
+SPECIAL_TOKENS = [UNK_TOKEN, PAD_TOKEN, BOS_TOKEN, EOS_TOKEN, MASK_TOKEN]
 
 
 def _wrap(backend: HFTokenizer) -> PreTrainedTokenizerFast:
@@ -29,6 +32,7 @@ def _wrap(backend: HFTokenizer) -> PreTrainedTokenizerFast:
         pad_token=PAD_TOKEN,
         bos_token=BOS_TOKEN,
         eos_token=EOS_TOKEN,
+        mask_token=MASK_TOKEN,
     )
 
 
@@ -110,6 +114,12 @@ class Tokenizer:
         # len() counts every id the model must be able to emit (base vocab plus
         # any added tokens); the model's output projection is sized from this.
         return len(self._fast)
+
+    @property
+    def mask_token_id(self) -> int | None:
+        """Id of the <mask> token, or None for tokenizers trained before it was
+        added. Required by the GPT-BERT masked-next-token-prediction objective."""
+        return self._fast.mask_token_id
 
     # ------------------------------------------------------------------
     # Serialisation
