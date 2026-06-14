@@ -9,7 +9,7 @@ based task: it predicts human reading times from the model's word surprisal."""
 
 from .minimal_pairs import TaskResult, evaluate_task, evaluate_tasks
 from .reading import ReadingResult, evaluate_reading, word_surprisal
-from .scoring import completion_logprob, score_span, sequence_logprob
+from .scoring import completion_logprob, score_span, score_spans_batched, sequence_logprob
 from .tasks import TASKS, Example, TaskSpec
 
 __all__ = [
@@ -23,6 +23,7 @@ __all__ = [
     "evaluate_reading",
     "word_surprisal",
     "score_span",
+    "score_spans_batched",
     "sequence_logprob",
     "completion_logprob",
 ]

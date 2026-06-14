@@ -12,18 +12,11 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass, field
 
+from tqdm import tqdm
+
 from .data import iter_records
-from .scoring import completion_logprob, sequence_logprob
+from .scoring import score_spans_batched
 from .tasks import TASKS, Candidate, Example
-
-
-def _score_candidate(model, tokenizer, candidate: Candidate, device) -> float:
-    kind = candidate[0]
-    if kind == "seq":
-        return sequence_logprob(model, tokenizer, candidate[1], device=device)
-    if kind == "comp":
-        return completion_logprob(model, tokenizer, candidate[1], candidate[2], device=device)
-    raise ValueError(f"Unknown candidate kind: {kind!r}")
 
 
 def _is_correct(scores: list[float], label: int) -> bool:
@@ -57,24 +50,69 @@ class TaskResult:
         return sum(self.total.values())
 
 
-def evaluate_task(model, tokenizer, directory, adapter, *, device="cpu", limit=None) -> TaskResult:
+def evaluate_task(
+    model, tokenizer, directory, adapter, *, device="cpu", limit=None, batch_size: int = 256
+) -> TaskResult:
     """Score every example produced by ``adapter`` over the JSONL files in
-    ``directory``. ``limit`` caps the number of records read *per paradigm file*
-    (so a capped run still samples every paradigm — handy for smoke tests and
+    ``directory``.
+
+    Candidates are packed into batches of ``batch_size`` and scored with a single
+    forward pass each, which gives a large speedup over the previous one-at-a-time
+    approach.  ``limit`` caps the number of records read *per paradigm file* (so a
+    capped run still samples every paradigm — handy for smoke tests and
     training-time checks); ``None`` runs the full set."""
     result = TaskResult()
     seen: dict[str, int] = defaultdict(int)
+
+    pending_examples: list[Example] = []
+    pending_items: list[tuple[str, int]] = []
+    pending_map: list[tuple[int, int]] = []
+
+    pbar = tqdm(unit="ex", leave=False, dynamic_ncols=True)
+
+    def flush() -> None:
+        if not pending_items:
+            return
+        scores_flat = score_spans_batched(model, tokenizer, pending_items, device=device)
+        per_example: dict[int, list[tuple[int, float]]] = defaultdict(list)
+        for k, (ex_idx, cand_idx) in enumerate(pending_map):
+            per_example[ex_idx].append((cand_idx, scores_flat[k]))
+        for ex_idx, example in enumerate(pending_examples):
+            pairs = sorted(per_example[ex_idx])
+            result.add(example.uid, _is_correct([s for _, s in pairs], example.label))
+        pbar.update(len(pending_examples))
+        pbar.set_postfix(acc=f"{result.accuracy:.3f}", n=result.n)
+        pending_examples.clear()
+        pending_items.clear()
+        pending_map.clear()
+
     for stem, record in iter_records(directory):
         if limit is not None and seen[stem] >= limit:
             continue
         seen[stem] += 1
         for example in adapter(record, stem):
-            scores = [_score_candidate(model, tokenizer, c, device) for c in example.candidates]
-            result.add(example.uid, _is_correct(scores, example.label))
+            ex_idx = len(pending_examples)
+            pending_examples.append(example)
+            for cand_idx, candidate in enumerate(example.candidates):
+                kind = candidate[0]
+                if kind == "seq":
+                    pending_items.append((candidate[1], 0))
+                elif kind == "comp":
+                    pending_items.append((candidate[1], len(candidate[1]) - len(candidate[2])))
+                else:
+                    raise ValueError(f"Unknown candidate kind: {kind!r}")
+                pending_map.append((ex_idx, cand_idx))
+            if len(pending_items) >= batch_size:
+                flush()
+
+    flush()
+    pbar.close()
     return result
 
 
-def evaluate_tasks(model, tokenizer, data_root, tasks=None, *, device="cpu", limit=None) -> dict[str, TaskResult]:
+def evaluate_tasks(
+    model, tokenizer, data_root, tasks=None, *, device="cpu", limit=None, batch_size: int = 256
+) -> dict[str, TaskResult]:
     """Evaluate several tasks rooted at ``data_root`` (one subdirectory each).
 
     ``tasks`` is a list of names from ``TASKS`` (default: all). Tasks whose data
@@ -82,14 +120,14 @@ def evaluate_tasks(model, tokenizer, data_root, tasks=None, *, device="cpu", lim
     from pathlib import Path
 
     data_root = Path(data_root)
-    names = tasks if tasks is not None else list(TASKS)
+    names = [n for n in (tasks if tasks is not None else list(TASKS))
+             if (data_root / TASKS[n].subdir).is_dir()]
     results: dict[str, TaskResult] = {}
-    for name in names:
+    for name in tqdm(names, desc="tasks", unit="task", dynamic_ncols=True):
         spec = TASKS[name]
         directory = data_root / spec.subdir
-        if not directory.is_dir():
-            continue
         results[name] = evaluate_task(
-            model, tokenizer, directory, spec.adapter, device=device, limit=limit
+            model, tokenizer, directory, spec.adapter,
+            device=device, limit=limit, batch_size=batch_size,
         )
     return results
