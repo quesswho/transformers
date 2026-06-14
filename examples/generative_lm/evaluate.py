@@ -26,7 +26,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
 import torch
 
-from transformer import DecoderOnlyTransformer
+from transformer import DecoderOnlyTransformer, GPTBERT
 from tokenizer import Tokenizer
 from eval import TASKS, evaluate_reading, evaluate_task
 
@@ -45,14 +45,22 @@ def parse_args() -> argparse.Namespace:
                         help=f"Comma-separated subset of {{{','.join(ALL_TASKS)}}}, or 'all' (default: all)")
     parser.add_argument("--limit", type=int, default=None,
                         help="Cap records read per paradigm file (for quick smoke runs; default: full set)")
+    parser.add_argument("--score-mode", choices=["causal", "mlm"], default="causal",
+                        help="How to score minimal pairs: 'causal' (left-to-right next-token "
+                             "log-prob, the default) or 'mlm' (GPT-BERT's bidirectional masked "
+                             "pseudo-log-likelihood — usually stronger on BLiMP for a GPT-BERT "
+                             "checkpoint; requires a <mask> token)")
     parser.add_argument("--device", default=None, help="torch device (default: cuda if available)")
     parser.add_argument("--json", default=None, metavar="PATH",
                         help="Also write the full results (per-paradigm accuracies) to this JSON file")
     return parser.parse_args()
 
 
-def load_model(checkpoint: str, device):
-    model, ckpt = DecoderOnlyTransformer.from_checkpoint(checkpoint, map_location=device)
+def load_model(checkpoint: str, device, score_mode: str):
+    # 'mlm' scoring needs the bidirectional forward(is_causal=False), which only
+    # GPTBERT exposes; the checkpoint is structurally identical either way.
+    cls = GPTBERT if score_mode == "mlm" else DecoderOnlyTransformer
+    model, ckpt = cls.from_checkpoint(checkpoint, map_location=device)
     model.to(device).eval()
     tokenizer = Tokenizer.from_dict(ckpt["tokenizer"])
     return model, tokenizer
@@ -69,11 +77,23 @@ def main() -> None:
         raise SystemExit(f"Unknown task(s): {unknown}. Choose from {ALL_TASKS}.")
 
     print(f"Loading {args.checkpoint} onto {device} ...", flush=True)
-    model, tokenizer = load_model(args.checkpoint, device)
+    model, tokenizer = load_model(args.checkpoint, device, args.score_mode)
+
+    # 'mlm' scoring corrupts the scored token with <mask>; without one we cannot
+    # build the masked variants, so fail loudly rather than silently mis-scoring.
+    mask_id = None
+    if args.score_mode == "mlm":
+        mask_id = tokenizer.mask_token_id
+        if mask_id is None:
+            raise SystemExit(
+                "--score-mode mlm needs a tokenizer with a <mask> token, but this "
+                "checkpoint's tokenizer has none. Use a GPT-BERT checkpoint."
+            )
 
     from pathlib import Path
     data_root = Path(args.data_dir)
-    print(f"Scoring tasks: {', '.join(tasks)}  (data: {data_root})\n", flush=True)
+    print(f"Scoring tasks: {', '.join(tasks)}  (data: {data_root})  "
+          f"[{args.score_mode} scoring]\n", flush=True)
 
     report = {}
     accuracies = []
@@ -90,7 +110,7 @@ def main() -> None:
             missing.append(name)
             continue
         r = evaluate_task(model, tokenizer, directory, TASKS[name].adapter,
-                          device=device, limit=args.limit)
+                          device=device, limit=args.limit, mask_id=mask_id)
         print(f"{name:<16}{len(r.uid_accuracy):>10}{r.n:>10}{r.accuracy:>9.1%}", flush=True)
         accuracies.append(r.accuracy)
         report[name] = {"accuracy": r.accuracy, "n": r.n, "paradigms": r.uid_accuracy}

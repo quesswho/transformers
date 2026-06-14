@@ -20,6 +20,8 @@ one-off use (e.g. reading-time surprisal).
 
 from __future__ import annotations
 
+from collections import defaultdict
+
 import torch
 import torch.nn.functional as F
 
@@ -114,6 +116,82 @@ def score_spans_batched(
         else:
             results.append(_span_sum(next(lp_iter), offsets_list[i], items[i][1]))
     return results
+
+
+@torch.inference_mode()
+def score_spans_batched_mlm(
+    model,
+    tokenizer,
+    items: list[tuple[str, int]],
+    *,
+    mask_id: int,
+    device="cpu",
+    batch_size: int = 256,
+) -> list[float]:
+    """Pseudo-log-likelihood scoring through GPT-BERT's bidirectional (BERT) path.
+
+    A drop-in alternative to ``score_spans_batched`` that scores each candidate with
+    the masked-next-token objective the model was *also* trained on, instead of the
+    causal one. For each scored token at position ``p`` (``p >= 1`` whose character
+    span ends after ``start_char``) input position ``p`` is replaced by ``<mask>``,
+    the model is run with ``is_causal=False``, and the log-prob of the original token
+    is read from output position ``p - 1`` -- exactly the offset
+    ``training.get_mntp_batch`` trains. The span score is the sum of these per-token
+    log-probs (Salazar et al. 2020 pseudo-log-likelihood).
+
+    Unlike the causal scorer this needs one masked forward row *per scored token*, so
+    it is much heavier. Rows are grouped by length and packed into forward passes of
+    up to ``batch_size`` rows; equal-length grouping avoids right-padding, which the
+    bidirectional path (no attention mask plumbed through ``forward``) cannot handle
+    without real tokens attending to pad positions.
+
+    Requires a model whose ``forward`` accepts ``is_causal=False`` (i.e. ``GPTBERT``)
+    and a tokenizer with a ``<mask>`` token."""
+    if not items:
+        return []
+    encoded = [tokenizer.encode_with_offsets(text) for text, _ in items]
+
+    # One masked variant per scored token. Each row remembers which item it feeds,
+    # where to read the prediction (p - 1) and which original id is the target.
+    rows_ids: list[list[int]] = []
+    rows_read: list[int] = []
+    rows_target: list[int] = []
+    rows_owner: list[int] = []
+    totals = [0.0] * len(items)
+
+    for idx, ((ids, offsets), (_, start_char)) in enumerate(zip(encoded, items)):
+        if len(ids) < 2:
+            continue
+        for p in range(1, len(ids)):
+            if offsets[p][1] > start_char:
+                masked = list(ids)
+                masked[p] = mask_id
+                rows_ids.append(masked)
+                rows_read.append(p - 1)
+                rows_target.append(ids[p])
+                rows_owner.append(idx)
+
+    if not rows_ids:
+        return totals
+
+    # Group rows by length so each forward batch is rectangular without padding.
+    by_len: dict[int, list[int]] = defaultdict(list)
+    for r, ids in enumerate(rows_ids):
+        by_len[len(ids)].append(r)
+
+    for row_indices in by_len.values():
+        for s in range(0, len(row_indices), batch_size):
+            chunk = row_indices[s:s + batch_size]
+            batch = torch.tensor([rows_ids[r] for r in chunk], dtype=torch.long, device=device)
+            logits = model(batch, is_causal=False)                       # [B, L, V]
+            read = torch.tensor([rows_read[r] for r in chunk], device=device)
+            tgt = torch.tensor([rows_target[r] for r in chunk], device=device)
+            sel = logits[torch.arange(len(chunk), device=device), read]  # [B, V]
+            lp = F.log_softmax(sel.float(), dim=-1).gather(-1, tgt.unsqueeze(-1)).squeeze(-1)
+            for j, r in enumerate(chunk):
+                totals[rows_owner[r]] += lp[j].item()
+
+    return totals
 
 
 def sequence_logprob(model, tokenizer, text: str, *, device="cpu") -> float:
