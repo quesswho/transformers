@@ -120,7 +120,7 @@ class ReadingResult:
 def evaluate_reading(model, tokenizer, csv_path, *, device="cpu", limit=None) -> ReadingResult:
     """Score a model on the reading dataset at ``csv_path``.
 
-    Computes each region's model surprisal, then the surprisal→reading-time
+    Computes each region's model surprisal, then the surprisal->reading-time
     correlations and the eye-tracking / self-paced predictive-power scores. Measures
     absent from the CSV are skipped. ``limit`` caps the number of regions processed
     (for quick smoke runs); ``None`` uses all."""

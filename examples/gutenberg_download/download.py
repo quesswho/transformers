@@ -187,8 +187,8 @@ def main() -> None:
 
     log_file.close()
     print(f"\nCorpus: {total / (1024*1024):.1f} MB  ({downloaded} downloaded, {skipped} skipped)")
-    print(f"Saved → {output}")
-    print(f"Log   → {log_path}")
+    print(f"Saved -> {output}")
+    print(f"Log   -> {log_path}")
 
 
 if __name__ == "__main__":

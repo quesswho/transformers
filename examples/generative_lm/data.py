@@ -5,6 +5,7 @@ to the example rather than living in the model-agnostic src/training package.
 """
 
 import hashlib
+import json
 import os
 
 import numpy as np
@@ -17,7 +18,9 @@ def load_text(path: str) -> str:
 
 
 def _tokenizer_fingerprint(tokenizer) -> str:
-    raw = tokenizer.to_dict()["tokenizer_json"]
+    # Hash the whole serialised tokenizer (not just tokenizer_json) so a morph
+    # tokenizer's Morfessor model is also folded into the cache key.
+    raw = json.dumps(tokenizer.to_dict(), sort_keys=True)
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
@@ -42,6 +45,6 @@ def load_tokens(text: str, tokenizer, data_path: str | None) -> np.ndarray:
 
     if cache_path is not None:
         np.save(cache_path, arr)
-        print(f"Token cache written → {cache_path}")
+        print(f"Token cache written -> {cache_path}")
 
     return arr

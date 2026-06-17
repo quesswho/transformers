@@ -32,12 +32,14 @@ def restore_training_state(model, optimizer, ckpt: dict) -> int:
 
     The optimizer state is skipped (with a warning) when its parameter layout no
     longer matches the model, so a resumed run with an altered architecture
-    restarts the optimizer instead of crashing.
+    restarts the optimizer instead of crashing. A KeyError covers the optimizer
+    *kind* changing between runs (e.g. resuming a pure-AdamW checkpoint with the
+    hybrid Muon optimizer, or vice versa), whose state_dicts have different keys.
     """
     model.load_state_dict(ckpt["model_state_dict"])
     if "optimizer_state_dict" in ckpt:
         try:
             optimizer.load_state_dict(ckpt["optimizer_state_dict"])
-        except ValueError:
+        except (ValueError, KeyError):
             print("Warning: optimizer state skipped (parameter layout changed); optimizer restarted.\n")
     return ckpt["step"] + 1 if "step" in ckpt else 1

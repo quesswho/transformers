@@ -4,12 +4,12 @@ Text preprocessing for Project Gutenberg corpora.
 Applies standard NLP preprocessing to clean raw text before training:
   - Strip HTML tags and decode HTML entities
   - Normalize line endings and strip control characters
-  - Unicode NFKC normalization (NBSP, ligatures, fancy quotes → ASCII)
+  - Unicode NFKC normalization (NBSP, ligatures, fancy quotes -> ASCII)
   - Collapse multiple inline spaces/tabs per line (preserves leading indentation)
   - Remove decorative separator lines (---, ===, ***, ___, ~~~)
-  - Cap repeated punctuation runs at 3 (e.g. "......" → "...")
+  - Cap repeated punctuation runs at 3 (e.g. "......" -> "...")
   - Collapse 3+ consecutive blank lines to 2
-  - Unwrap hard-wrapped prose lines (single \\n → space)
+  - Unwrap hard-wrapped prose lines (single \\n -> space)
 
 Can be run standalone or imported as a module:
 
@@ -28,7 +28,7 @@ from pathlib import Path
 _CONTROL_RE        = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _HTML_TAG_RE       = re.compile(r"<[^>]{0,500}>")
 _SEPARATOR_LINE_RE = re.compile(r"(?m)^[ \t]*[*\-=_~#]{3,}[ \t]*$")
-_INLINE_SPACE_RE   = re.compile(r"(?<=\S)[ \t]+")   # only collapses after non-whitespace → preserves indentation
+_INLINE_SPACE_RE   = re.compile(r"(?<=\S)[ \t]+")   # only collapses after non-whitespace -> preserves indentation
 _TRAILING_SPACE_RE = re.compile(r"(?m)[ \t]+$")
 _REPEAT_PUNCT_RE   = re.compile(r"([.!?\-])\1{3,}")
 _MULTI_BLANK_RE    = re.compile(r"\n{3,}")
@@ -41,11 +41,11 @@ def preprocess_text(text: str) -> str:
     # 1. Normalize line endings
     text = text.replace("\r\n", "\n").replace("\r", "\n")
 
-    # 2. Strip HTML tags, then decode entities (e.g. &amp; → &)
+    # 2. Strip HTML tags, then decode entities (e.g. &amp; -> &)
     text = _HTML_TAG_RE.sub("", text)
     text = _html.unescape(text)
 
-    # 3. NFKC: NBSP→space, ligatures, smart quotes, wide chars → ASCII equivalents
+    # 3. NFKC: NBSP->space, ligatures, smart quotes, wide chars -> ASCII equivalents
     text = unicodedata.normalize("NFKC", text)
 
     # 4. Remove non-printable control characters (keep \t and \n)
@@ -56,13 +56,13 @@ def preprocess_text(text: str) -> str:
     text = _TRAILING_SPACE_RE.sub("", text)
     text = _SEPARATOR_LINE_RE.sub("", text)
 
-    # 6. Cap repeated punctuation runs at 3 (e.g. "------" → "---", "......" → "...")
+    # 6. Cap repeated punctuation runs at 3 (e.g. "------" -> "---", "......" -> "...")
     text = _REPEAT_PUNCT_RE.sub(r"\1\1\1", text)
 
     # 7. Collapse 3+ consecutive blank lines to 2
     text = _MULTI_BLANK_RE.sub("\n\n", text)
 
-    # 8. Unwrap hard-wrapped prose: single \n → space (preserves \n\n paragraph breaks)
+    # 8. Unwrap hard-wrapped prose: single \n -> space (preserves \n\n paragraph breaks)
     text = _HARD_WRAP_RE.sub(" ", text)
 
     # Re-collapse any double spaces introduced by the unwrap step
@@ -115,8 +115,8 @@ def main() -> None:
 
     clean_mb  = clean_bytes / (1024 ** 2)
     reduction = (1.0 - clean_mb / raw_mb) * 100 if raw_mb else 0.0
-    print(f"{raw_mb:.1f} MB → {clean_mb:.1f} MB ({reduction:.1f}% reduction)")
-    print(f"Saved → {output_path}")
+    print(f"{raw_mb:.1f} MB -> {clean_mb:.1f} MB ({reduction:.1f}% reduction)")
+    print(f"Saved -> {output_path}")
 
 
 if __name__ == "__main__":

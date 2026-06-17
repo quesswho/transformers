@@ -12,8 +12,11 @@ Run from project root:
     Load a tokenizer
     python examples/generative_lm/train.py --data mytext.txt --tokenizer tok.json
 
+    Choose a tokenizer type (unigram [default] / bpe / morph)
+    python examples/generative_lm/train.py --data mytext.txt --tokenizer-type morph --vocab-size 8000
+
     build babylm_strict_small model
-    python examples/generative_lm/train.py --output models/sslm7M.pt --checkpoint-dir models/chk --data data/babylm_strict_small.txt --save-tokenizer data/vocab/ssbby10k.json --vocab-size 10000 --steps 10000
+    python examples/generative_lm/train.py --output models/muon_gpt.pt --checkpoint-dir models/chk --data data/babylm_strict_small.txt --save-tokenizer data/vocab/morph8k.json --vocab-size 8000 --tokenizer-type morph --steps 20000 --max-epochs 10 --muon-lr 5e-4 --lr 1e-3
 """
 
 import argparse
@@ -31,11 +34,14 @@ from tokenizer import Tokenizer
 from training import (
     Prefetcher,
     ThroughputMeter,
+    build_optimizer,
+    build_scheduler,
     get_batch,
     load_checkpoint,
     print_param_table,
     restore_training_state,
     save_checkpoint,
+    shorten_inductor_kernel_names,
 )
 
 from data import load_text, load_tokens
@@ -54,10 +60,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-layers", type=int, default=6, help="Number of transformer layers (default: 8)")
     parser.add_argument("--d-ff", type=int, default=None, help="Feed-forward hidden dimension (default: 8/3 * d_model)")
     parser.add_argument("--dropout", type=float, default=0.1, help="Dropout rate (default: 0.1)")
-    parser.add_argument("--lr", type=float, default=1e-3, help="AdamW peak learning rate (default: 1e-3)")
+    parser.add_argument("--lr", type=float, default=1e-3, help="AdamW peak learning rate for embeddings, LM head, biases and norms (default: 1e-3)")
+    parser.add_argument("--muon", default=True, action=argparse.BooleanOptionalAction, help="Use the hybrid Muon (2D hidden weights) + AdamW optimizer; --no-muon falls back to pure AdamW (default: enabled)")
+    parser.add_argument("--muon-lr", type=float, default=5e-4, help="Muon peak learning rate for 2D weight matrices (default: 5e-4)")
     parser.add_argument("--warmup-frac", type=float, default=0.03, help="Fraction of total steps spent linearly warming up the LR (default: 0.03)")
     parser.add_argument("--min-lr-ratio", type=float, default=0.1, help="Final LR as a fraction of peak after cosine decay (default: 0.1)")
-    parser.add_argument("--vocab-size", type=int, default=2000, help="Unigram vocab size (default: 2000)")
+    parser.add_argument("--vocab-size", type=int, default=2000, help="Subword vocab size (default: 2000). At BabyLM 10M-word scale keep this modest (~8k-16k) to avoid token inflation eating the budget")
+    parser.add_argument("--tokenizer-type", default="unigram", choices=["unigram", "bpe", "morph"], help="Tokenizer algorithm: unigram (default, strong all-rounder), bpe (best BLiMP/syntax), morph (Morfessor morphology-aware, best EWoK/entity tracking)")
     parser.add_argument("--tokenizer", default=None, help="Path to a pre-trained tokenizer.json file; skips tokenizer training")
     parser.add_argument("--save-tokenizer", default=None, help="Save the tokenizer to this JSON file after training/loading")
     parser.add_argument("--val-interval", type=int, default=500, help="Validate every N steps (default: 500)")
@@ -92,16 +101,22 @@ def build_tokenizer(args: argparse.Namespace, text: str) -> Tokenizer:
         tokenizer = Tokenizer.load(args.tokenizer)
         print(f"Tokenizer loaded. Vocab size: {tokenizer.vocab_size}\n")
     else:
-        print(f"Training Unigram tokenizer (vocab_size={args.vocab_size})...")
-        tokenizer = Tokenizer.train(text, vocab_size=args.vocab_size)
+        print(f"Training {args.tokenizer_type} tokenizer (vocab_size={args.vocab_size})...")
+        tokenizer = Tokenizer.train(text, vocab_size=args.vocab_size, tokenizer_type=args.tokenizer_type)
         print(f"Tokenizer trained. Vocab size: {tokenizer.vocab_size}\n")
+
+    # Fertility (tokens/word) over a corpus sample: the key token-inflation
+    # diagnostic — fewer tokens/word at equal vocab means better use of the
+    # fixed BabyLM word budget.
+    tok_per_word, unk_frac = tokenizer.fertility(text[:1_000_000])
+    print(f"Fertility: {tok_per_word:.3f} tokens/word  |  <unk>: {unk_frac:.2%}\n")
 
     if args.save_tokenizer is not None:
         save_dir = os.path.dirname(args.save_tokenizer)
         if save_dir:
             os.makedirs(save_dir, exist_ok=True)
         tokenizer.save(args.save_tokenizer)
-        print(f"Tokenizer saved → {args.save_tokenizer}\n")
+        print(f"Tokenizer saved -> {args.save_tokenizer}\n")
     return tokenizer
 
 
@@ -193,12 +208,14 @@ def main() -> None:
         epoch_limit = args.max_epochs * steps_per_epoch
         total_steps = min(args.steps, epoch_limit)
         print(f"Epoch limit: {args.max_epochs} epochs × {steps_per_epoch:,} steps/epoch "
-              f"= {epoch_limit:,} steps  →  training for {total_steps:,} steps\n")
+              f"= {epoch_limit:,} steps  ->  training for {total_steps:,} steps\n")
 
     model = DecoderOnlyTransformer(config).to(device)
     print_param_table(model.count_parameters())
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.1, fused=True)
+    optimizer = build_optimizer(model, muon=args.muon, muon_lr=args.muon_lr, adam_lr=args.lr, weight_decay=0.1)
+    print(f"Optimizer: hybrid Muon (lr={args.muon_lr:.0e}) + AdamW (lr={args.lr:.0e})\n" if args.muon
+          else f"Optimizer: AdamW (lr={args.lr:.0e})\n")
     criterion = nn.CrossEntropyLoss()
 
     start_step = 1
@@ -211,7 +228,7 @@ def main() -> None:
     # step and args.steps, so on resume we just fast-forward it to start_step
     # rather than persisting scheduler state (also robust if --steps changes).
     warmup_steps = max(1, int(args.warmup_frac * total_steps))
-    scheduler = torch.optim.lr_scheduler.LambdaLR(
+    scheduler = build_scheduler(
         optimizer,
         lambda s: cosine_lr(s, total_steps, warmup_steps, args.min_lr_ratio),
     )
@@ -219,6 +236,9 @@ def main() -> None:
         scheduler.step()
 
     if args.compile:
+        # On Windows, keep Inductor's Triton cache paths under MAX_PATH (260) so
+        # long fused-kernel names don't break compilation; no-op elsewhere.
+        shorten_inductor_kernel_names()
         model = torch.compile(model, mode="reduce-overhead")
 
     step = start_step - 1
@@ -258,7 +278,7 @@ def main() -> None:
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
                     save_checkpoint(os.path.join(args.checkpoint_dir, "best.pt"), model, optimizer, step, tokenizer, config)
-                    print(f"  → new best checkpoint (val={val_loss:.4f})")
+                    print(f"  -> new best checkpoint (val={val_loss:.4f})")
 
         # Restart the measurement window after any pause (logging sync,
         # validation, checkpointing) so only pure training steps are timed.
@@ -272,7 +292,7 @@ def main() -> None:
         print(f"Peak GPU memory: {torch.cuda.max_memory_allocated() / 1024**2:,.0f} MiB")
 
     save_checkpoint(args.output, model, optimizer, step, tokenizer, config)
-    print(f"\nModel saved → {args.output}")
+    print(f"\nModel saved -> {args.output}")
 
 
 if __name__ == "__main__":
